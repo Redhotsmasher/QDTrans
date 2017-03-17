@@ -1,0 +1,203 @@
+//------------------------------------------------------------------------------
+// Clang rewriter sample. Demonstrates:
+//
+// * How to use RecursiveASTVisitor to find interesting AST nodes.
+// * How to use the Rewriter API to rewrite the source code.
+//
+// Eli Bendersky (eliben@gmail.com)
+// This code is in the public domain
+//------------------------------------------------------------------------------
+#include <cstdio>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <iostream>
+
+#include "clang/AST/ASTConsumer.h"
+#include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/FileManager.h"
+#include "clang/Basic/SourceManager.h"
+#include "clang/Basic/TargetInfo.h"
+#include "clang/Basic/TargetOptions.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Lex/Preprocessor.h"
+#include "clang/Parse/ParseAST.h"
+#include "clang/Rewrite/Core/Rewriter.h"
+#include "clang/Rewrite/Frontend/Rewriters.h"
+#include "llvm/Support/Host.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include "clang/Tooling/CommonOptionsParser.h"
+#include "clang/Tooling/Tooling.h"
+// Declares llvm::cl::extrahelp.
+#include "llvm/Support/CommandLine.h"
+
+using namespace clang;
+
+
+// By implementing RecursiveASTVisitor, we can specify which AST nodes
+// we're interested in by overriding relevant methods.
+class MyASTVisitor : public RecursiveASTVisitor<MyASTVisitor> {
+public:
+    MyASTVisitor(Rewriter &R) : TheRewriter(R) {}
+
+    bool VisitStmt(Stmt *s) {
+
+        std::cout << "VisitStmt()\n";
+        Stmt::child_iterator MyChildIterator = s->child_begin();
+        while(MyChildIterator != s->child_end()) {
+            std::cout << "Iterated\n";
+            if (isa<CallExpr>(*MyChildIterator)) {
+                CallExpr* MyCallExpr = cast<CallExpr>(*MyChildIterator);
+                FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
+                if(MyFunDecl != 0) {
+                    std::string name = MyFunDecl->getNameInfo().getName().getAsString();
+                    std::cout << name;
+                }
+            } else {
+                std::cout << "Dumping:\n";
+                Stmt* currs = *MyChildIterator;
+                currs->dump();
+            }
+            MyChildIterator++;
+        }
+        return true;
+    }
+
+    bool VisitDecl(Decl *d) {
+        //std::cout << "ASDFASDF";
+        if (isa<TranslationUnitDecl>(d)) {
+            d->dumpColor();
+        }
+        return true;
+    }
+
+    /*
+    bool VisitFunctionDecl(FunctionDecl *f) {
+        // Only function definitions (with bodies), not declarations.
+        if (f->hasBody()) {
+            Stmt *FuncBody = f->getBody();
+
+            // Type name as string
+            QualType QT = f->getReturnType();
+            std::string TypeStr = QT.getAsString();
+
+            // Function name
+            DeclarationName DeclName = f->getNameInfo().getName();
+            std::string FuncName = DeclName.getAsString();
+
+            // Add comment before
+            std::stringstream SSBefore;
+            SSBefore << "// Begin function " << FuncName << " returning " << TypeStr
+                     << "\n";
+            SourceLocation ST = f->getSourceRange().getBegin();
+            TheRewriter.InsertText(ST, SSBefore.str(), true, true);
+
+            // And after
+            std::stringstream SSAfter;
+            SSAfter << "\n// End function " << FuncName;
+            ST = FuncBody->getLocEnd().getLocWithOffset(1);
+            TheRewriter.InsertText(ST, SSAfter.str(), true, true);
+        }
+
+        return true;
+    }
+    */
+
+private:
+  Rewriter &TheRewriter;
+};
+
+// Implementation of the ASTConsumer interface for reading an AST produced
+// by the Clang parser.
+class MyASTConsumer : public ASTConsumer {
+public:
+  MyASTConsumer(Rewriter &R) : Visitor(R) {}
+
+  // Override the method that gets called for each parsed top-level
+  // declaration.
+  virtual void HandleTranslationUnit(clang::ASTContext &Context) {
+    // Traversing the translation unit decl via a RecursiveASTVisitor
+    // will visit all nodes in the AST.
+    Visitor.TraverseDecl(Context.getTranslationUnitDecl());
+  }
+
+private:
+  MyASTVisitor Visitor;
+};
+
+using namespace clang::tooling;
+using namespace llvm;
+
+// Apply a custom category to all command-line options so that they are the
+// only ones displayed.
+static llvm::cl::OptionCategory MyToolCategory("qdtrans options");
+
+// CommonOptionsParser declares HelpMessage with a description of the common
+// command-line options related to the compilation database and input files.
+// It's nice to have this help message in all tools.
+static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
+
+// A help message for this specific tool can be added afterwards.
+static cl::extrahelp MoreHelp("\n\nUsage: qdtrans <filename>\n\n");
+
+int main(int argc, const char *argv[]) {
+  CommonOptionsParser OptionsParser(argc, argv, MyToolCategory);
+  ClangTool Tool(OptionsParser.getCompilations(),
+                 OptionsParser.getSourcePathList());
+  
+  // CompilerInstance will hold the instance of the Clang compiler for us,
+  // managing the various objects needed to run the compiler.
+  CompilerInstance TheCompInst;
+  TheCompInst.createDiagnostics();
+
+  LangOptions &lo = TheCompInst.getLangOpts();
+  lo.CPlusPlus = 0;
+
+  // Initialize target info with the default triple for our platform.
+  auto TO = std::make_shared<clang::TargetOptions>();
+  TO->Triple = llvm::sys::getDefaultTargetTriple();
+  TargetInfo *TI =
+      TargetInfo::CreateTargetInfo(TheCompInst.getDiagnostics(), TO);
+      TheCompInst.setTarget(TI);
+
+  TheCompInst.setFileManager(&Tool.getFiles());
+  TheCompInst.createSourceManager(Tool.getFiles());
+  SourceManager &SourceMgr = TheCompInst.getSourceManager();
+  TheCompInst.createPreprocessor(TU_Module);
+  TheCompInst.createASTContext();
+
+  // A Rewriter helps us manage the code rewriting task.
+  Rewriter TheRewriter;
+  TheRewriter.setSourceMgr(SourceMgr, TheCompInst.getLangOpts());
+
+  // Set the main file handled by the source manager to the input file.
+  /*const FileEntry *FileIn = FileMgr.getFile(argv[1]);
+  SourceMgr.setMainFileID(
+  SourceMgr.createFileID(FileIn, SourceLocation(), SrcMgr::C_User));*/
+  const clang::FileEntry *file = TheCompInst.getFileManager().getFile(argv[1]); // There could be a better way to do this than argv[1].
+  clang::FileID mainFileID = TheCompInst.getSourceManager().getOrCreateFileID(file, clang::SrcMgr::C_User);
+  TheCompInst.getSourceManager().setMainFileID(mainFileID);
+  TheCompInst.getDiagnosticClient().BeginSourceFile(TheCompInst.getLangOpts(), &TheCompInst.getPreprocessor());
+
+  // Create an AST consumer instance which is going to get called by
+  // ParseAST.
+  //MyASTConsumer TheConsumer(TheRewriter);
+  //std::unique_ptr<clang::ASTConsumer> TheConsumer(new MyASTConsumer(TheRewriter));
+
+  TheCompInst.createSema(TU_Complete, NULL);
+
+  // Parse the file to AST, registering our consumer as the AST consumer.
+  //ParseAST(TheCompInst.getPreprocessor(), &TheConsumer, TheCompInst.getASTContext());
+  TheCompInst.setASTConsumer(llvm::make_unique<MyASTConsumer>(MyASTConsumer(TheRewriter)));
+  ParseAST(TheCompInst.getSema());
+  
+  // At this point the rewriter's buffer should be full with the rewritten
+  // file contents.
+  /*const RewriteBuffer *RewriteBuf =
+      TheRewriter.getRewriteBufferFor(SourceMgr.getMainFileID());
+      llvm::outs() << std::string(RewriteBuf->begin(), RewriteBuf->end());*/
+
+  return 0;
+}
