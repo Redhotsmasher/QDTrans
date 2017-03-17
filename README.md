@@ -2,10 +2,10 @@
 ## How to compile
 
 1. Follow Step 0 [here](https://clang.llvm.org/docs/LibASTMatchersTutorial.html).
-2. Run the following:
+2. Clone this repo and copy the resulting folder `qdtrans-new` into `~/clang-llvm/llvm/tools/clang`.
+3. Run the following:
 ```
 cd ~/clang-llvm/llvm/tools/clang
-mkdir tools/extra/loop-convert
-echo 'add_subdirectory(loop-convert)' >> tools/extra/CMakeLists.txt
+echo 'add_subdirectory(qdtrans-new)' >> tools/extra/CMakeLists.txt
 ```
-3. Simply `cd ~/clang-llvm/build` and `ninja`.
+4. Simply `cd ~/clang-llvm/build` and `ninja`.
