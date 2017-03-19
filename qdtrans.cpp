@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <iostream>
+#include <fstream>
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -28,6 +29,7 @@
 #include "clang/Rewrite/Frontend/Rewriters.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/ADT/Twine.h"
 
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
@@ -47,28 +49,28 @@ public:
     MyASTVisitor(Rewriter &R, Replacements &Rp) : TheRewriter(R), TheReplacements(Rp) {}
 
     bool VisitStmt(Stmt *s) {
-
-        std::cout << "VisitStmt()\n";
+        //std::cout << "VisitStmt()\n";
         Stmt::child_iterator MyChildIterator = s->child_begin();
         while(MyChildIterator != s->child_end()) {
-            std::cout << "Iterated\n";
+            //std::cout << "Iterated\n";
             if (isa<CallExpr>(*MyChildIterator)) {
                 CallExpr* MyCallExpr = cast<CallExpr>(*MyChildIterator);
                 FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
                 if(MyFunDecl != 0) {
                     std::string name = MyFunDecl->getNameInfo().getName().getAsString();
-                    std::cout << name;
+                    std::cout << name << "\n";
                 }
             } else {
-                std::cout << "Dumping:\n";
-                Stmt* currs = *MyChildIterator;
-                currs->dump();
+                //std::cout << "Dumping:\n";
+                //Stmt* currs = *MyChildIterator;
+                //currs->dump();
             }
             MyChildIterator++;
         }
         return true;
     }
 
+    /*
     bool VisitDecl(Decl *d) {
         //std::cout << "ASDFASDF";
         if (isa<TranslationUnitDecl>(d)) {
@@ -76,6 +78,7 @@ public:
         }
         return true;
     }
+    */
 };
 
 // Implementation of the ASTConsumer interface for reading an AST produced
@@ -134,7 +137,10 @@ int main(int argc, char **argv) {
             for(int i = 0; i < argc-2; i++) {
                 args[i] = argv[i+2];
             }
-            clang::tooling::runToolOnCodeWithArgs(new MyASTClassAction(Rw, Rp), argv[1], args);
+            std::ifstream t(argv[1]);
+            std::stringstream buffer;
+            buffer << t.rdbuf();
+            clang::tooling::runToolOnCodeWithArgs(new MyASTClassAction(Rw, Rp), Twine(buffer.str()), args, argv[1]);
             //clang::tooling::runToolOnCode(new MyASTClassAction(Rw, Rp), argv[1]);
         }
     } else {
