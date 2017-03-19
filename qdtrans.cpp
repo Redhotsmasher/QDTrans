@@ -140,7 +140,7 @@ int main(int argc, char **argv) {
             std::ifstream t(argv[1]);
             std::stringstream buffer;
             buffer << t.rdbuf();
-            clang::tooling::runToolOnCodeWithArgs(new MyASTClassAction(Rw, Rp), Twine(buffer.str()), args, argv[1]);
+            clang::tooling::runToolOnCodeWithArgs(new MyASTClassAction(Rw, Rp), Twine(buffer.str()), args, Twine(argv[1]));
             //clang::tooling::runToolOnCode(new MyASTClassAction(Rw, Rp), argv[1]);
         }
     } else {
