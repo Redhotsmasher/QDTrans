@@ -27,14 +27,16 @@
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Tooling/Core/Replacement.h"
 #include "clang/Rewrite/Frontend/Rewriters.h"
+#include "clang/Basic/SourceLocation.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/ADT/StringRef.h"
 
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
 // Declares llvm::cl::extrahelp.
-#include "llvm/Support/CommandLine.h"
+// #include "llvm/Support/CommandLine.h"
 
 using namespace clang;
 using namespace clang::tooling;
@@ -43,30 +45,53 @@ using namespace clang::tooling;
 // we're interested in by overriding relevant methods.
 class MyASTVisitor : public RecursiveASTVisitor<MyASTVisitor> {
 private:
+    ASTContext *TheContext;
     Rewriter &TheRewriter;
     Replacements &TheReplacements;
 public:
-    MyASTVisitor(Rewriter &R, Replacements &Rp) : TheRewriter(R), TheReplacements(Rp) {}
+    MyASTVisitor(ASTContext *C, Rewriter &R, Replacements &Rp) : TheContext(C), TheRewriter(R), TheReplacements(Rp) {}
 
     bool VisitStmt(Stmt *s) {
         //std::cout << "VisitStmt()\n";
-        Stmt::child_iterator MyChildIterator = s->child_begin();
-        while(MyChildIterator != s->child_end()) {
+        Stmt::child_iterator ChildIterator = s->child_begin();
+        Stmt::child_iterator AddNode = s->child_begin();
+        bool inCrit = false;
+        AddNode++;
+        while(ChildIterator != s->child_end()) {
             //std::cout << "Iterated\n";
-            if (isa<CallExpr>(*MyChildIterator)) {
-                CallExpr* MyCallExpr = cast<CallExpr>(*MyChildIterator);
-                FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
-                if(MyFunDecl != 0) {
-                    std::string name = MyFunDecl->getNameInfo().getName().getAsString();
-                    std::cout << name << "\n";
+            if(inCrit == false) {
+                if(isa<CallExpr>(*ChildIterator)) {
+                    CallExpr* MyCallExpr = cast<CallExpr>(*ChildIterator);
+                    FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
+                    if(MyFunDecl != 0) {
+                        std::string name = MyFunDecl->getNameInfo().getName().getAsString();
+                        if(ChildIterator != s->child_end() && name == "pthread_mutex_lock") {
+                        
+                        }
+                    }
+                } else {
+                    //std::cout << "Dumping:\n";
+                    //Stmt* currs = *MyChildIterator;
+                    //currs->dump();
                 }
+                AddNode++;
             } else {
-                //std::cout << "Dumping:\n";
-                //Stmt* currs = *MyChildIterator;
-                //currs->dump();
+                CharSourceRange csr = CharSourceRange::getCharRange((*ChildIterator)->getSourceRange());
+                SourceManager& sm = TheContext->getSourceManager();
+                FullSourceLoc fslstart = FullSourceLoc(csr.getBegin(), sm);
+                FullSourceLoc fslend = FullSourceLoc(csr.getBegin(), sm);
+                unsigned start = std::get<1>(fslstart.getDecomposedLoc());
+                unsigned length = std::get<1>(fslend.getDecomposedLoc())-start;
+                Range range = Range(start, length);
+                std::vector<Range> rangevecin(1);
+                rangevecin[0] = range;   
+                std::vector<Range> rangevecout = calculateRangesAfterReplacements(TheReplacements, rangevecin);
+                Range adjrange = rangevecout[0];
+                Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->tryGetRealPathName(), adjrange.getOffset(), adjrange.getLength(), "[INSERT STRING OBJECT HERE]");
+                
             }
-            MyChildIterator++;
-        }
+            ChildIterator++;
+        } 
         return true;
     }
 
@@ -85,7 +110,7 @@ public:
 // by the Clang parser.
 class MyASTConsumer : public ASTConsumer {
 public:
-    MyASTConsumer(Rewriter &R, Replacements &Rp) : Visitor(R, Rp) {}
+    MyASTConsumer(ASTContext *C, Rewriter &R, Replacements &Rp) : Visitor(C, R, Rp) {}
 
   // Override the method that gets called for each parsed top-level
   // declaration.
@@ -107,16 +132,14 @@ static llvm::cl::OptionCategory MyToolCategory("qdtrans options");
 
 class MyASTClassAction : public clang::ASTFrontendAction {
 private:
+    ASTContext *Context;
     Rewriter &TheRewriter;
     Replacements &TheReplacements;
 public:
     MyASTClassAction(Rewriter &R, Replacements &Rp) : TheRewriter(R), TheReplacements(Rp) {}
-    
-  virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
-    clang::CompilerInstance &Compiler, llvm::StringRef InFile) {
-    return std::unique_ptr<clang::ASTConsumer>(
-        new MyASTConsumer(TheRewriter, TheReplacements));
-  }
+    virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance &Compiler, llvm::StringRef InFile) {
+        return std::unique_ptr<clang::ASTConsumer>(new MyASTConsumer(&Compiler.getASTContext(), TheRewriter, TheReplacements));
+    }
     
 };
 
