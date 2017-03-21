@@ -13,6 +13,7 @@
 #include <string>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -32,14 +33,17 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
-// Declares llvm::cl::extrahelp.
-// #include "llvm/Support/CommandLine.h"
 
 using namespace clang;
 using namespace clang::tooling;
+
+ASTContext *LastContext;
+
+Replacement createAdjustedReplacementForCSR(CharSourceRange csr, ASTContext* TheContext, Replacements& reps, std::string text);
 
 // By implementing RecursiveASTVisitor, we can specify which AST nodes
 // we're interested in by overriding relevant methods.
@@ -49,13 +53,18 @@ private:
     Rewriter &TheRewriter;
     Replacements &TheReplacements;
 public:
-    MyASTVisitor(ASTContext *C, Rewriter &R, Replacements &Rp) : TheContext(C), TheRewriter(R), TheReplacements(Rp) {}
+    MyASTVisitor(ASTContext *C, Rewriter &R, Replacements &Rp) : TheContext(C), TheRewriter(R), TheReplacements(Rp) {
+        LastContext = TheContext;
+    }
 
     bool VisitStmt(Stmt *s) {
         //std::cout << "VisitStmt()\n";
         Stmt::child_iterator ChildIterator = s->child_begin();
         Stmt::child_iterator AddNode = s->child_begin();
         bool inCrit = false;
+        std::stringstream nodetext;
+        std::string nodestring;
+        llvm::raw_string_ostream os(nodestring);
         AddNode++;
         while(ChildIterator != s->child_end()) {
             //std::cout << "Iterated\n";
@@ -66,7 +75,9 @@ public:
                     if(MyFunDecl != 0) {
                         std::string name = MyFunDecl->getNameInfo().getName().getAsString();
                         if(ChildIterator != s->child_end() && name == "pthread_mutex_lock") {
-                        
+                            inCrit = true;
+                            nodetext.str("");
+                            nodestring = "";
                         }
                     }
                 } else {
@@ -76,19 +87,40 @@ public:
                 }
                 AddNode++;
             } else {
-                CharSourceRange csr = CharSourceRange::getCharRange((*ChildIterator)->getSourceRange());
-                SourceManager& sm = TheContext->getSourceManager();
-                FullSourceLoc fslstart = FullSourceLoc(csr.getBegin(), sm);
-                FullSourceLoc fslend = FullSourceLoc(csr.getBegin(), sm);
-                unsigned start = std::get<1>(fslstart.getDecomposedLoc());
-                unsigned length = std::get<1>(fslend.getDecomposedLoc())-start;
-                Range range = Range(start, length);
-                std::vector<Range> rangevecin(1);
-                rangevecin[0] = range;   
-                std::vector<Range> rangevecout = calculateRangesAfterReplacements(TheReplacements, rangevecin);
-                Range adjrange = rangevecout[0];
-                Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->tryGetRealPathName(), adjrange.getOffset(), adjrange.getLength(), "[INSERT STRING OBJECT HERE]");
-                
+                bool goelse = false;
+                if(isa<CallExpr>(*ChildIterator)) {
+                    CallExpr* MyCallExpr = cast<CallExpr>(*ChildIterator);
+                    FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
+                    if(MyFunDecl != 0) {
+                        std::string name = MyFunDecl->getNameInfo().getName().getAsString();
+                        if(ChildIterator != s->child_end() && name == "pthread_mutex_unlock") {
+                            inCrit = false;
+                            PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                            PrintingPolicy& ppr = pp;
+                            (*AddNode)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                            nodetext << nodestring << "\n";
+                            CharSourceRange csr = CharSourceRange::getCharRange((*AddNode)->getSourceRange());
+                            Replacement rep = createAdjustedReplacementForCSR(csr, TheContext, TheReplacements, nodetext.str());
+                            Replacement& repr = rep;
+                            rep.apply(TheRewriter);
+                            Replacements reps = Replacements(repr);
+                            TheReplacements.merge(reps);
+                        } else {
+                            goelse = true;
+                        }
+                    } else {
+                        goelse = true;
+                    }
+                } else {
+                    goelse = true;
+                }
+                if(goelse == true) { //Deduplicated else section starts here
+                    nodestring = "";
+                    PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                    PrintingPolicy& ppr = pp;
+                    (*ChildIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                    nodetext << nodestring << "\n";
+                }
             }
             ChildIterator++;
         } 
@@ -133,18 +165,38 @@ static llvm::cl::OptionCategory MyToolCategory("qdtrans options");
 class MyASTClassAction : public clang::ASTFrontendAction {
 private:
     ASTContext *Context;
-    Rewriter &TheRewriter;
     Replacements &TheReplacements;
+    Rewriter TheRewriter;
 public:
-    MyASTClassAction(Rewriter &R, Replacements &Rp) : TheRewriter(R), TheReplacements(Rp) {}
+    MyASTClassAction(Replacements &Rp) : TheReplacements(Rp) {}
     virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance &Compiler, llvm::StringRef InFile) {
-        return std::unique_ptr<clang::ASTConsumer>(new MyASTConsumer(&Compiler.getASTContext(), TheRewriter, TheReplacements));
+        TheRewriter = Rewriter(Compiler.getASTContext().getSourceManager(), Compiler.getASTContext().getLangOpts());
+        Rewriter &RwRef = TheRewriter;
+        return std::unique_ptr<clang::ASTConsumer>(new MyASTConsumer(&Compiler.getASTContext(), RwRef, TheReplacements));
     }
-    
+
+    Rewriter& getRewriter() {
+        return TheRewriter;
+    }
 };
 
 void printUsage() {
     std::cout << "\nUsage:\n\tqdtrans <single input file> [Clang options]\n\n";
+}
+
+Replacement createAdjustedReplacementForCSR(CharSourceRange csr, ASTContext* TheContext, Replacements& reps, std::string text) {
+    SourceManager& sm = TheContext->getSourceManager();
+    FullSourceLoc fslstart = FullSourceLoc(csr.getBegin(), sm);
+    FullSourceLoc fslend = FullSourceLoc(csr.getBegin(), sm);
+    unsigned start = std::get<1>(fslstart.getDecomposedLoc());
+    unsigned length = std::get<1>(fslend.getDecomposedLoc())-start;
+    Range range = Range(start, length);
+    std::vector<Range> rangevecin(1);
+    rangevecin[0] = range;   
+    std::vector<Range> rangevecout = calculateRangesAfterReplacements(reps, rangevecin);
+    Range adjrange = rangevecout[0];
+    Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->tryGetRealPathName(), adjrange.getOffset(), adjrange.getLength(), StringRef(text));
+    return newReplacement;
 }
 
 int main(int argc, char **argv) {
@@ -152,9 +204,7 @@ int main(int argc, char **argv) {
         if(strcmp(argv[1], "--help") == 0) {
             printUsage();
         } else {
-            Rewriter TheRewriter = Rewriter();
             Replacements TheReplacements = Replacements();
-            Rewriter& Rw = TheRewriter;
             Replacements& Rp = TheReplacements;
             std::vector<std::string> args(argc-2);
             for(int i = 0; i < argc-2; i++) {
@@ -163,8 +213,11 @@ int main(int argc, char **argv) {
             std::ifstream t(argv[1]);
             std::stringstream buffer;
             buffer << t.rdbuf();
-            clang::tooling::runToolOnCodeWithArgs(new MyASTClassAction(Rw, Rp), Twine(buffer.str()), args, Twine(argv[1]));
-            //clang::tooling::runToolOnCode(new MyASTClassAction(Rw, Rp), argv[1]);
+            MyASTClassAction *maca = new MyASTClassAction(Rp);
+            clang::tooling::runToolOnCodeWithArgs(maca, Twine(buffer.str()), args, Twine(argv[1]));
+            //clang::tooling::runToolOnCode(new MyASTClassAction(Rp), argv[1]);
+            const RewriteBuffer *RewriteBuf = maca->getRewriter().getRewriteBufferFor(LastContext->getSourceManager().getMainFileID());
+            std::cout << std::string(RewriteBuf->begin(), RewriteBuf->end());
         }
     } else {
         printUsage();
