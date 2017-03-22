@@ -43,6 +43,8 @@ using namespace clang::tooling;
 
 ASTContext *LastContext;
 
+SourceLocation *LastTranslationUnitLoc;
+
 Replacement createAdjustedReplacementForCSR(CharSourceRange csr, ASTContext* TheContext, Replacements& reps, std::string text);
 
 // By implementing RecursiveASTVisitor, we can specify which AST nodes
@@ -127,15 +129,17 @@ public:
         return true;
     }
 
-    /*
+    
     bool VisitDecl(Decl *d) {
         //std::cout << "ASDFASDF";
         if (isa<TranslationUnitDecl>(d)) {
-            d->dumpColor();
+            //d->dumpColor();
+            SourceLocation sl = d->getLocation();
+            LastTranslationUnitLoc = &sl;
         }
         return true;
     }
-    */
+    
 };
 
 // Implementation of the ASTConsumer interface for reading an AST produced
@@ -164,14 +168,22 @@ static llvm::cl::OptionCategory MyToolCategory("qdtrans options");
 
 class MyASTClassAction : public clang::ASTFrontendAction {
 private:
-    ASTContext *Context;
     Replacements &TheReplacements;
     Rewriter TheRewriter;
+    std::string TheCode;
+    SourceLocation TranslationUnitLoc;
 public:
-    MyASTClassAction(Replacements &Rp) : TheReplacements(Rp) {}
+    MyASTClassAction(Replacements &Rp, std::string Code) : TheReplacements(Rp), TheCode(Code) {}
     virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance &Compiler, llvm::StringRef InFile) {
         TheRewriter = Rewriter(Compiler.getASTContext().getSourceManager(), Compiler.getASTContext().getLangOpts());
         Rewriter &RwRef = TheRewriter;
+        RewriteBuffer &RewriteBuf = TheRewriter.getEditBuffer(Compiler.getASTContext().getSourceManager().getMainFileID());
+        // Somehow even initializing a buffer and then immediately attempting to print it causes a failed assertion. I can't even.
+        RewriteBuf.Initialize(StringRef(TheCode));
+        /*std::string resultstring;
+        llvm::raw_string_ostream os(resultstring);
+        RewriteBuf.write(os);
+        std::cout << resultstring;*/
         return std::unique_ptr<clang::ASTConsumer>(new MyASTConsumer(&Compiler.getASTContext(), RwRef, TheReplacements));
     }
 
@@ -213,11 +225,18 @@ int main(int argc, char **argv) {
             std::ifstream t(argv[1]);
             std::stringstream buffer;
             buffer << t.rdbuf();
-            MyASTClassAction *maca = new MyASTClassAction(Rp);
+            MyASTClassAction *maca = new MyASTClassAction(Rp, buffer.str());
             clang::tooling::runToolOnCodeWithArgs(maca, Twine(buffer.str()), args, Twine(argv[1]));
             //clang::tooling::runToolOnCode(new MyASTClassAction(Rp), argv[1]);
-            const RewriteBuffer *RewriteBuf = maca->getRewriter().getRewriteBufferFor(LastContext->getSourceManager().getMainFileID());
-            std::cout << std::string(RewriteBuf->begin(), RewriteBuf->end());
+            //const RewriteBuffer &RewriteBuf = maca->getRewriter().getEditBuffer(LastContext->getSourceManager().getMainFileID());
+            Rewriter &Rw = maca->getRewriter();
+            std::string resultstring;
+            //llvm::raw_string_ostream os(resultstring);
+            //resultstring = Rw.getRewrittenText(SourceRange(LastContext->getTranslationUnitDecl()->getLocation()));
+            resultstring = Rw.getRewrittenText(*LastTranslationUnitLoc);
+            //RewriteBuf.write(os);
+            std::cout << resultstring;
+            //std::cout << std::string(RewriteBuf.begin(), RewriteBuf.end());
         }
     } else {
         printUsage();
