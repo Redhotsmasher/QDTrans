@@ -188,6 +188,7 @@ Replacement createAdjustedReplacementForCSR(CharSourceRange csr, ASTContext* The
     rangevecin[0] = range;   
     std::vector<Range> rangevecout = calculateRangesAfterReplacements(reps, rangevecin);
     Range adjrange = rangevecout[0];
+    std::cout << sm.getFileEntryForID(sm.getMainFileID())->getName().str() << std::endl;
     Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->tryGetRealPathName(), adjrange.getOffset(), adjrange.getLength(), StringRef(text));
     return newReplacement;
 }
@@ -222,19 +223,28 @@ int main(int argc, const char **argv) {
     std::cout << RepMap << std::endl;
     int result = Tool.run(newFrontendActionFactory<MyASTClassAction>().get());
     auto& myFiles = Tool.getFiles();
-    const FileEntry *myFileEntry = myFiles.getFile(argv[1]);
-    auto myFileBuffer = myFiles.getBufferForFile(argv[1]);
-    if(!myFileBuffer) {
-        std::cerr << "Nope" << std::endl;
-    }
+    
     DiagnosticOptions dopts;
     //TextDiagnosticPrinter *DiagClient = new clang::TextDiagnosticPrinter(llvm::errs(), &dopts, false);
     IntrusiveRefCntPtr<clang::DiagnosticIDs> DiagID(new clang::DiagnosticIDs());
     DiagnosticsEngine Diags(DiagID, &dopts);
-    SourceManager sm = SourceManager(Diags, myFiles, false);
+    SourceManager sm(Diags, myFiles, false);
+    std::string filename = argv[1];//sm.getFileEntryForID(sm.getMainFileID())->tryGetRealPathName();
+    std::cout << "FILENAME: " << filename << std::endl;
+    const FileEntry *myFileEntry = myFiles.getFile(filename);
+    auto myFileBuffer = myFiles.getBufferForFile(filename);
+    if(!myFileBuffer) {
+        std::cerr << "Nope" << std::endl;
+    }
     LangOptions lopts;
     Rewriter Rw = Rewriter(sm, lopts);
     sm.overrideFileContents(myFileEntry, myFileBuffer.get().get(), false);
+    Replacements mainreps = (*RepMap)[filename];
+    llvm::outs() << "[REPSSTART]\n";
+    for(auto r : mainreps) {
+        std::cout << r.toString() << std::endl;
+    }
+    llvm::outs() << "[REPSEND]\n";
     Tool.applyAllReplacements(Rw);
     llvm::outs() << "[BUFSTART]\n";
     std::cout << std::string((*myFileBuffer)->getBufferStart()) << std::endl;
