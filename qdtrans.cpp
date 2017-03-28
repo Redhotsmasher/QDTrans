@@ -37,13 +37,15 @@
 
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
+#include "clang/Tooling/Refactoring.h"
+#include "clang/Basic/FileManager.h"
+#include "clang/Basic/DiagnosticOptions.h"
+//#include "clang/Frontend/TextDiagnosticPrinter.h"
 
 using namespace clang;
 using namespace clang::tooling;
 
-ASTContext *LastContext;
-
-SourceLocation *LastTranslationUnitLoc;
+std::map<std::string, Replacements>* RepMap;
 
 Replacement createAdjustedReplacementForCSR(CharSourceRange csr, ASTContext* TheContext, Replacements& reps, std::string text);
 
@@ -52,15 +54,14 @@ Replacement createAdjustedReplacementForCSR(CharSourceRange csr, ASTContext* The
 class MyASTVisitor : public RecursiveASTVisitor<MyASTVisitor> {
 private:
     ASTContext *TheContext;
-    Rewriter &TheRewriter;
-    Replacements &TheReplacements;
+    //Rewriter &TheRewriter;
+    //Replacements &TheReplacements;
 public:
-    MyASTVisitor(ASTContext *C, Rewriter &R, Replacements &Rp) : TheContext(C), TheRewriter(R), TheReplacements(Rp) {
-        LastContext = TheContext;
+    MyASTVisitor(ASTContext *C) : TheContext(C) {
+        //LastContext = TheContext;
     }
 
     bool VisitStmt(Stmt *s) {
-        //std::cout << "VisitStmt()\n";
         Stmt::child_iterator ChildIterator = s->child_begin();
         Stmt::child_iterator AddNode = s->child_begin();
         bool inCrit = false;
@@ -69,7 +70,6 @@ public:
         llvm::raw_string_ostream os(nodestring);
         AddNode++;
         while(ChildIterator != s->child_end()) {
-            //std::cout << "Iterated\n";
             if(inCrit == false) {
                 if(isa<CallExpr>(*ChildIterator)) {
                     CallExpr* MyCallExpr = cast<CallExpr>(*ChildIterator);
@@ -82,11 +82,7 @@ public:
                             nodestring = "";
                         }
                     }
-                } else {
-                    //std::cout << "Dumping:\n";
-                    //Stmt* currs = *MyChildIterator;
-                    //currs->dump();
-                }
+                } 
                 AddNode++;
             } else {
                 bool goelse = false;
@@ -99,14 +95,15 @@ public:
                             inCrit = false;
                             PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                             PrintingPolicy& ppr = pp;
-                            (*AddNode)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                            nodetext << nodestring << "\n";
+                            (*AddNode)->printPretty(llvm::outs(), (PrinterHelper*)NULL, ppr, (unsigned)4);
+                            llvm::outs() << ";\n"; //<< nodestring << "NL2\n";
                             CharSourceRange csr = CharSourceRange::getCharRange((*AddNode)->getSourceRange());
-                            Replacement rep = createAdjustedReplacementForCSR(csr, TheContext, TheReplacements, nodetext.str());
+                            SourceManager& sm = TheContext->getSourceManager();
+                            StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                            Replacement rep = createAdjustedReplacementForCSR(csr, TheContext, (*RepMap)[filename.str()], nodetext.str());
                             Replacement& repr = rep;
-                            rep.apply(TheRewriter);
                             Replacements reps = Replacements(repr);
-                            TheReplacements.merge(reps);
+                            (*RepMap)[filename.str()].merge(reps);
                         } else {
                             goelse = true;
                         }
@@ -120,33 +117,28 @@ public:
                     nodestring = "";
                     PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                     PrintingPolicy& ppr = pp;
-                    (*ChildIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                    nodetext << nodestring << "\n";
+                    (*ChildIterator)->printPretty(llvm::outs(), (PrinterHelper*)NULL, ppr, (unsigned)4);
+                    llvm::outs() << ";\n"; //<< nodestring << "NL2\n";
+                    CharSourceRange csr = CharSourceRange::getCharRange((*AddNode)->getSourceRange());
+                    SourceManager& sm = TheContext->getSourceManager();
+                    StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                    Replacement rep = createAdjustedReplacementForCSR(csr, TheContext, (*RepMap)[filename.str()], nodetext.str());
+                    Replacement& repr = rep;
+                    Replacements reps = Replacements(repr);
+                    (*RepMap)[filename.str()].merge(reps);
                 }
             }
             ChildIterator++;
         } 
         return true;
     }
-
-    
-    bool VisitDecl(Decl *d) {
-        //std::cout << "ASDFASDF";
-        if (isa<TranslationUnitDecl>(d)) {
-            //d->dumpColor();
-            SourceLocation sl = d->getLocation();
-            LastTranslationUnitLoc = &sl;
-        }
-        return true;
-    }
-    
 };
 
 // Implementation of the ASTConsumer interface for reading an AST produced
 // by the Clang parser.
 class MyASTConsumer : public ASTConsumer {
 public:
-    MyASTConsumer(ASTContext *C, Rewriter &R, Replacements &Rp) : Visitor(C, R, Rp) {}
+    MyASTConsumer(ASTContext *C) : Visitor(C) {}
 
   // Override the method that gets called for each parsed top-level
   // declaration.
@@ -162,34 +154,23 @@ private:
 
 using namespace llvm;
 
-// Apply a custom category to all command-line options so that they are the
-// only ones displayed.
-static llvm::cl::OptionCategory MyToolCategory("qdtrans options");
-
 class MyASTClassAction : public clang::ASTFrontendAction {
 private:
-    Replacements &TheReplacements;
-    Rewriter TheRewriter;
-    std::string TheCode;
-    SourceLocation TranslationUnitLoc;
+    //Replacements &TheReplacements;
+    //Rewriter TheRewriter;
+    //std::string TheCode;
 public:
-    MyASTClassAction(Replacements &Rp, std::string Code) : TheReplacements(Rp), TheCode(Code) {}
     virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance &Compiler, llvm::StringRef InFile) {
-        TheRewriter = Rewriter(Compiler.getASTContext().getSourceManager(), Compiler.getASTContext().getLangOpts());
-        Rewriter &RwRef = TheRewriter;
-        RewriteBuffer &RewriteBuf = TheRewriter.getEditBuffer(Compiler.getASTContext().getSourceManager().getMainFileID());
-        // Somehow even initializing a buffer and then immediately attempting to print it causes a failed assertion. I can't even.
-        RewriteBuf.Initialize(StringRef(TheCode));
-        /*std::string resultstring;
-        llvm::raw_string_ostream os(resultstring);
-        RewriteBuf.write(os);
-        std::cout << resultstring;*/
-        return std::unique_ptr<clang::ASTConsumer>(new MyASTConsumer(&Compiler.getASTContext(), RwRef, TheReplacements));
+        //Rewriter &RwRef = Rw;
+        std::cout << "hello world\n";
+        auto r = std::unique_ptr<clang::ASTConsumer>(new MyASTConsumer(&Compiler.getASTContext()));
+        std::cout << "hello world\n";
+        return r;
     }
 
-    Rewriter& getRewriter() {
+    /*Rewriter& getRewriter() {
         return TheRewriter;
-    }
+        }*/
 };
 
 void printUsage() {
@@ -211,34 +192,53 @@ Replacement createAdjustedReplacementForCSR(CharSourceRange csr, ASTContext* The
     return newReplacement;
 }
 
-int main(int argc, char **argv) {
-    if (argc > 1) {
-        if(strcmp(argv[1], "--help") == 0) {
-            printUsage();
-        } else {
-            Replacements TheReplacements = Replacements();
-            Replacements& Rp = TheReplacements;
-            std::vector<std::string> args(argc-2);
-            for(int i = 0; i < argc-2; i++) {
-                args[i] = argv[i+2];
-            }
-            std::ifstream t(argv[1]);
-            std::stringstream buffer;
-            buffer << t.rdbuf();
-            MyASTClassAction *maca = new MyASTClassAction(Rp, buffer.str());
-            clang::tooling::runToolOnCodeWithArgs(maca, Twine(buffer.str()), args, Twine(argv[1]));
-            //clang::tooling::runToolOnCode(new MyASTClassAction(Rp), argv[1]);
-            //const RewriteBuffer &RewriteBuf = maca->getRewriter().getEditBuffer(LastContext->getSourceManager().getMainFileID());
-            Rewriter &Rw = maca->getRewriter();
-            std::string resultstring;
-            //llvm::raw_string_ostream os(resultstring);
-            //resultstring = Rw.getRewrittenText(SourceRange(LastContext->getTranslationUnitDecl()->getLocation()));
-            resultstring = Rw.getRewrittenText(*LastTranslationUnitLoc);
-            //RewriteBuf.write(os);
-            std::cout << resultstring;
-            //std::cout << std::string(RewriteBuf.begin(), RewriteBuf.end());
-        }
-    } else {
-        printUsage();
+// Apply a custom category to all command-line options so that they are the
+// only ones displayed.
+static llvm::cl::OptionCategory MyToolCategory("qdtrans options");
+
+// CommonOptionsParser declares HelpMessage with a description of the common
+// command-line options related to the compilation database and input files.
+// It's nice to have this help message in all tools.
+static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
+
+// A help message for this specific tool can be added afterwards.
+static cl::extrahelp MoreHelp("\nUsage:\n\tqdtrans <single input file> [Clang options]\n\n");
+
+int main(int argc, const char **argv) {
+    // parse the command-line args passed to your code
+    CommonOptionsParser op(argc, argv, MyToolCategory);
+    // create a new Clang Tool instance (a LibTooling environment)
+    RefactoringTool Tool(op.getCompilations(), op.getSourcePathList());
+
+    
+    std::vector<std::string> args(argc-2);
+    for(int i = 0; i < argc-2; i++) {
+        args[i] = argv[i+2];
     }
+    std::ifstream t(argv[1]);
+    std::stringstream buffer;
+    buffer << t.rdbuf();
+    RepMap = &Tool.getReplacements();
+    std::cout << RepMap << std::endl;
+    int result = Tool.run(newFrontendActionFactory<MyASTClassAction>().get());
+    auto& myFiles = Tool.getFiles();
+    const FileEntry *myFileEntry = myFiles.getFile(argv[1]);
+    auto myFileBuffer = myFiles.getBufferForFile(argv[1]);
+    if(!myFileBuffer) {
+        std::cerr << "Nope" << std::endl;
+    }
+    DiagnosticOptions dopts;
+    //TextDiagnosticPrinter *DiagClient = new clang::TextDiagnosticPrinter(llvm::errs(), &dopts, false);
+    IntrusiveRefCntPtr<clang::DiagnosticIDs> DiagID(new clang::DiagnosticIDs());
+    DiagnosticsEngine Diags(DiagID, &dopts);
+    SourceManager sm = SourceManager(Diags, myFiles, false);
+    LangOptions lopts;
+    Rewriter Rw = Rewriter(sm, lopts);
+    sm.overrideFileContents(myFileEntry, myFileBuffer.get().get(), false);
+    Tool.applyAllReplacements(Rw);
+    llvm::outs() << "[BUFSTART]\n";
+    std::cout << std::string((*myFileBuffer)->getBufferStart()) << std::endl;
+    llvm::outs() << "[BUFEND]\n";
+    myFiles.PrintStats();
+    return result;
 }
