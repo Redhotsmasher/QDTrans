@@ -47,6 +47,8 @@ using namespace clang::tooling;
 
 std::map<std::string, Replacements>* RepMap;
 
+const char* argv1;
+
 Replacement createAdjustedReplacementForCSR(CharSourceRange csr, ASTContext* TheContext, Replacements& reps, std::string text);
 
 // By implementing RecursiveASTVisitor, we can specify which AST nodes
@@ -188,8 +190,13 @@ Replacement createAdjustedReplacementForCSR(CharSourceRange csr, ASTContext* The
     rangevecin[0] = range;   
     std::vector<Range> rangevecout = calculateRangesAfterReplacements(reps, rangevecin);
     Range adjrange = rangevecout[0];
-    std::cout << sm.getFileEntryForID(sm.getMainFileID())->getName().str() << std::endl;
-    Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->tryGetRealPathName(), adjrange.getOffset(), adjrange.getLength(), StringRef(text));
+    if(strcmp(argv1, sm.getFileEntryForID(sm.getMainFileID())->getName().str().c_str()) == 0) {
+        std::cout << "Filenames match, replacements should be carrying over." << std::endl;
+    } else {
+        std::cout << "Filenames do not match, please fix." << std::endl;
+    }
+    std::cout << "\"" << sm.getFileEntryForID(sm.getMainFileID())->getName().str() << "\"" << std::endl;
+    Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), adjrange.getOffset(), adjrange.getLength(), StringRef(text));
     return newReplacement;
 }
 
@@ -210,7 +217,7 @@ int main(int argc, const char **argv) {
     CommonOptionsParser op(argc, argv, MyToolCategory);
     // create a new Clang Tool instance (a LibTooling environment)
     RefactoringTool Tool(op.getCompilations(), op.getSourcePathList());
-
+    argv1 = argv[1];
     
     std::vector<std::string> args(argc-2);
     for(int i = 0; i < argc-2; i++) {
@@ -230,15 +237,11 @@ int main(int argc, const char **argv) {
     DiagnosticsEngine Diags(DiagID, &dopts);
     SourceManager sm(Diags, myFiles, false);
     std::string filename = argv[1];//sm.getFileEntryForID(sm.getMainFileID())->tryGetRealPathName();
-    std::cout << "FILENAME: " << filename << std::endl;
+    std::cout << "FILENAME: " << "\"" << filename << "\"" << std::endl;
     const FileEntry *myFileEntry = myFiles.getFile(filename);
-    auto myFileBuffer = myFiles.getBufferForFile(filename);
-    if(!myFileBuffer) {
-        std::cerr << "Nope" << std::endl;
-    }
     LangOptions lopts;
     Rewriter Rw = Rewriter(sm, lopts);
-    sm.overrideFileContents(myFileEntry, myFileBuffer.get().get(), false);
+    //sm.overrideFileContents(myFileEntry, myFileBuffer.get().get(), false);
     Replacements mainreps = (*RepMap)[filename];
     llvm::outs() << "[REPSSTART]\n";
     for(auto r : mainreps) {
@@ -246,6 +249,10 @@ int main(int argc, const char **argv) {
     }
     llvm::outs() << "[REPSEND]\n";
     Tool.applyAllReplacements(Rw);
+    auto myFileBuffer = myFiles.getBufferForFile(filename);
+    if(!myFileBuffer) {
+        std::cerr << "Nope" << std::endl;
+    }
     llvm::outs() << "[BUFSTART]\n";
     std::cout << std::string((*myFileBuffer)->getBufferStart()) << std::endl;
     llvm::outs() << "[BUFEND]\n";
