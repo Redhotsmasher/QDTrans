@@ -40,6 +40,7 @@
 #include "clang/Tooling/Refactoring.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/DiagnosticOptions.h"
+
 //#include "clang/Frontend/TextDiagnosticPrinter.h"
 
 using namespace clang;
@@ -61,16 +62,16 @@ private:
 public:
     MyASTVisitor(ASTContext *C) : TheContext(C) {
         //LastContext = TheContext;
+        (*RepMap)[TheContext->getSourceManager().getFileEntryForID(TheContext->getSourceManager().getMainFileID())->getName()] = Replacements(); //Initializing the Replacements object
     }
 
     bool VisitStmt(Stmt *s) {
         Stmt::child_iterator ChildIterator = s->child_begin();
-        Stmt::child_iterator AddNode = s->child_begin();
+        CharSourceRange CSRToAddTo;
         bool inCrit = false;
         std::stringstream nodetext;
         std::string nodestring;
         llvm::raw_string_ostream os(nodestring);
-        AddNode++;
         while(ChildIterator != s->child_end()) {
             if(inCrit == false) {
                 if(isa<CallExpr>(*ChildIterator)) {
@@ -79,13 +80,13 @@ public:
                     if(MyFunDecl != 0) {
                         std::string name = MyFunDecl->getNameInfo().getName().getAsString();
                         if(ChildIterator != s->child_end() && name == "pthread_mutex_lock") {
+                            CSRToAddTo = CharSourceRange::getCharRange((*ChildIterator)->getSourceRange());
                             inCrit = true;
                             nodetext.str("");
                             nodestring = "";
                         }
                     }
                 } 
-                AddNode++;
             } else {
                 bool goelse = false;
                 if(isa<CallExpr>(*ChildIterator)) {
@@ -97,15 +98,20 @@ public:
                             inCrit = false;
                             PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                             PrintingPolicy& ppr = pp;
-                            (*AddNode)->printPretty(llvm::outs(), (PrinterHelper*)NULL, ppr, (unsigned)4);
-                            llvm::outs() << ";\n"; //<< nodestring << "NL2\n";
-                            CharSourceRange csr = CharSourceRange::getCharRange((*AddNode)->getSourceRange());
+                            llvm::outs() << "NODE:\n";
+                            (*ChildIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                            os << ";\n"; //<< nodestring << "NL2\n";
+                            std::cout << nodestring << std::endl;
+                            CharSourceRange csr = CSRToAddTo;
                             SourceManager& sm = TheContext->getSourceManager();
                             StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
                             Replacement rep = createAdjustedReplacementForCSR(csr, TheContext, (*RepMap)[filename.str()], nodetext.str());
                             Replacement& repr = rep;
+                            std::cout << rep.toString() << std::endl; 
+                            Replacements maprep = (*RepMap)[filename.str()];
                             Replacements reps = Replacements(repr);
-                            (*RepMap)[filename.str()].merge(reps);
+                            maprep = maprep.merge(reps);
+                            (*RepMap)[filename.str()] = maprep;
                         } else {
                             goelse = true;
                         }
@@ -119,15 +125,19 @@ public:
                     nodestring = "";
                     PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                     PrintingPolicy& ppr = pp;
-                    (*ChildIterator)->printPretty(llvm::outs(), (PrinterHelper*)NULL, ppr, (unsigned)4);
-                    llvm::outs() << ";\n"; //<< nodestring << "NL2\n";
-                    CharSourceRange csr = CharSourceRange::getCharRange((*AddNode)->getSourceRange());
+                    llvm::outs() << "NODE:\n";
+                    (*ChildIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                    os << ";\n"; //<< nodestring << "NL2\n";
+                    CharSourceRange csr = CharSourceRange::getCharRange((*ChildIterator)->getSourceRange());
                     SourceManager& sm = TheContext->getSourceManager();
                     StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
                     Replacement rep = createAdjustedReplacementForCSR(csr, TheContext, (*RepMap)[filename.str()], nodetext.str());
                     Replacement& repr = rep;
+                    std::cout << rep.toString() << std::endl; 
+                    Replacements maprep = (*RepMap)[filename.str()];
                     Replacements reps = Replacements(repr);
-                    (*RepMap)[filename.str()].merge(reps);
+                    maprep = maprep.merge(reps);
+                    (*RepMap)[filename.str()] = maprep;
                 }
             }
             ChildIterator++;
@@ -239,6 +249,7 @@ int main(int argc, const char **argv) {
     std::string filename = argv[1];//sm.getFileEntryForID(sm.getMainFileID())->tryGetRealPathName();
     std::cout << "FILENAME: " << "\"" << filename << "\"" << std::endl;
     const FileEntry *myFileEntry = myFiles.getFile(filename);
+    
     LangOptions lopts;
     Rewriter Rw = Rewriter(sm, lopts);
     //sm.overrideFileContents(myFileEntry, myFileBuffer.get().get(), false);
@@ -249,12 +260,14 @@ int main(int argc, const char **argv) {
     }
     llvm::outs() << "[REPSEND]\n";
     Tool.applyAllReplacements(Rw);
-    auto myFileBuffer = myFiles.getBufferForFile(filename);
+    /*auto myFileBuffer = myFiles.getBufferForFile(filename);
     if(!myFileBuffer) {
         std::cerr << "Nope" << std::endl;
-    }
+        }*/
+    auto myFileBuffer = Rw.getEditBuffer(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
     llvm::outs() << "[BUFSTART]\n";
-    std::cout << std::string((*myFileBuffer)->getBufferStart()) << std::endl;
+    //std::cout << std::string((*myFileBuffer)->getBufferStart()) << std::endl;
+    myFileBuffer.write(llvm::outs());
     llvm::outs() << "[BUFEND]\n";
     myFiles.PrintStats();
     return result;
