@@ -192,9 +192,9 @@ void printUsage() {
 Replacement createAdjustedReplacementForCSR(CharSourceRange csr, ASTContext* TheContext, Replacements& reps, std::string text) {
     SourceManager& sm = TheContext->getSourceManager();
     FullSourceLoc fslstart = FullSourceLoc(csr.getBegin(), sm);
-    FullSourceLoc fslend = FullSourceLoc(csr.getBegin(), sm);
+    FullSourceLoc fslend = FullSourceLoc(csr.getEnd(), sm);
     unsigned start = std::get<1>(fslstart.getDecomposedLoc());
-    unsigned length = std::get<1>(fslend.getDecomposedLoc())-start;
+    unsigned length = 5;//std::get<1>(fslend.getDecomposedLoc())-start;
     Range range = Range(start, length);
     std::vector<Range> rangevecin(1);
     rangevecin[0] = range;   
@@ -260,14 +260,14 @@ int main(int argc, const char **argv) {
     }
     llvm::outs() << "[REPSEND]\n";
     Tool.applyAllReplacements(Rw);
-    /*auto myFileBuffer = myFiles.getBufferForFile(filename);
+    auto myFileBuffer = myFiles.getBufferForFile(filename);
     if(!myFileBuffer) {
         std::cerr << "Nope" << std::endl;
-        }*/
-    auto myFileBuffer = Rw.getEditBuffer(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
+    }
+    //auto myFileBuffer = Rw.getEditBuffer(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
     llvm::outs() << "[BUFSTART]\n";
-    //std::cout << std::string((*myFileBuffer)->getBufferStart()) << std::endl;
-    myFileBuffer.write(llvm::outs());
+    std::cout << std::string((*myFileBuffer)->getBufferStart()) << std::endl;
+    //myFileBuffer.write(llvm::outs());
     llvm::outs() << "[BUFEND]\n";
     myFiles.PrintStats();
     return result;
