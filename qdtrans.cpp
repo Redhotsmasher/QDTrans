@@ -40,8 +40,7 @@
 #include "clang/Tooling/Refactoring.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/DiagnosticOptions.h"
-
-//#include "clang/Frontend/TextDiagnosticPrinter.h"
+#include "clang/Frontend/TextDiagnosticPrinter.h"
 
 using namespace clang;
 using namespace clang::tooling;
@@ -50,7 +49,7 @@ std::map<std::string, Replacements>* RepMap;
 
 const char* argv1;
 
-Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, Replacements& reps, std::string text);
+Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, Replacements& reps, std::string text, bool injection);
 
 // By implementing RecursiveASTVisitor, we can specify which AST nodes
 // we're interested in by overriding relevant methods.
@@ -80,7 +79,8 @@ public:
                     if(MyFunDecl != 0) {
                         std::string name = MyFunDecl->getNameInfo().getName().getAsString();
                         if(ChildIterator != s->child_end() && name == "pthread_mutex_lock") {
-                            SRToAddTo = (*ChildIterator)->getSourceRange();
+                            SourceRange sr = (*ChildIterator)->getSourceRange();
+                            SRToAddTo = SourceRange(sr.getBegin(), sr.getEnd());
                             inCrit = true;
                             nodetext.str("");
                             nodestring = "";
@@ -96,22 +96,6 @@ public:
                         std::string name = MyFunDecl->getNameInfo().getName().getAsString();
                         if(ChildIterator != s->child_end() && name == "pthread_mutex_unlock") {
                             inCrit = false;
-                            PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
-                            PrintingPolicy& ppr = pp;
-                            llvm::outs() << "NODE:\n";
-                            (*ChildIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                            os << ";\n"; //<< nodestring << "NL2\n";
-                            std::cout << nodestring << std::endl;
-                            SourceRange sr = SRToAddTo;
-                            SourceManager& sm = TheContext->getSourceManager();
-                            StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-                            Replacement rep = createAdjustedReplacementForSR(sr, TheContext, (*RepMap)[filename.str()], nodetext.str());
-                            Replacement& repr = rep;
-                            std::cout << rep.toString() << std::endl; 
-                            Replacements maprep = (*RepMap)[filename.str()];
-                            Replacements reps = Replacements(repr);
-                            maprep = maprep.merge(reps);
-                            (*RepMap)[filename.str()] = maprep;
                         } else {
                             goelse = true;
                         }
@@ -131,12 +115,17 @@ public:
                     SourceRange sr = (*ChildIterator)->getSourceRange();
                     SourceManager& sm = TheContext->getSourceManager();
                     StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-                    Replacement rep = createAdjustedReplacementForSR(sr, TheContext, (*RepMap)[filename.str()], nodetext.str());
-                    Replacement& repr = rep;
-                    std::cout << rep.toString() << std::endl; 
                     Replacements maprep = (*RepMap)[filename.str()];
+                    Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprep, os.str(), true);
+                    Replacement& repr = rep;
+                    std::cout << rep.toString() << std::endl;
                     Replacements reps = Replacements(repr);
                     maprep = maprep.merge(reps);
+                    Replacement rep2 = createAdjustedReplacementForSR(sr, TheContext, maprep, "", false);
+                    Replacement& repr2 = rep2;
+                    Replacements reps2 = Replacements(repr2);
+                    std::cout << rep2.toString() << std::endl;
+                    //maprep = maprep.merge(reps2);
                     (*RepMap)[filename.str()] = maprep;
                 }
             }
@@ -174,9 +163,7 @@ private:
 public:
     virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance &Compiler, llvm::StringRef InFile) {
         //Rewriter &RwRef = Rw;
-        std::cout << "hello world\n";
         auto r = std::unique_ptr<clang::ASTConsumer>(new MyASTConsumer(&Compiler.getASTContext()));
-        std::cout << "hello world\n";
         return r;
     }
 
@@ -189,23 +176,24 @@ void printUsage() {
     std::cout << "\nUsage:\n\tqdtrans <single input file> [Clang options]\n\n";
 }
 
-Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, Replacements& reps, std::string text) {
+Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, Replacements& reps, std::string text, bool injection) {
     SourceManager& sm = TheContext->getSourceManager();
     FullSourceLoc fslstart = FullSourceLoc(sr.getBegin(), sm);
     FullSourceLoc fslend = FullSourceLoc(sr.getEnd(), sm);
     unsigned start = std::get<1>(fslstart.getDecomposedLoc());
-    unsigned length = std::get<1>(fslend.getDecomposedLoc())-start;
+    unsigned length;
+    if(injection == true) {
+        length = 0;
+    } else {
+        length = std::get<1>(fslend.getDecomposedLoc())-start;
+    }
+    std::cout << "Start: " << start << ", End: " << start+length << std::endl;
     Range range = Range(start, length);
     std::vector<Range> rangevecin(1);
     rangevecin[0] = range;   
     std::vector<Range> rangevecout = calculateRangesAfterReplacements(reps, rangevecin);
     Range adjrange = rangevecout[0];
-    if(strcmp(argv1, sm.getFileEntryForID(sm.getMainFileID())->getName().str().c_str()) == 0) {
-        std::cout << "Filenames match, replacements should be carrying over." << std::endl;
-    } else {
-        std::cout << "Filenames do not match, please fix." << std::endl;
-    }
-    std::cout << "\"" << sm.getFileEntryForID(sm.getMainFileID())->getName().str() << "\"" << std::endl;
+    std::cout << "AdjStart: " << adjrange.getOffset() << ", AdjEnd: " << adjrange.getOffset()+adjrange.getLength() << std::endl;
     Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), adjrange.getOffset(), adjrange.getLength(), StringRef(text));
     return newReplacement;
 }
@@ -244,7 +232,8 @@ int main(int argc, const char **argv) {
     DiagnosticOptions dopts;
     //TextDiagnosticPrinter *DiagClient = new clang::TextDiagnosticPrinter(llvm::errs(), &dopts, false);
     IntrusiveRefCntPtr<clang::DiagnosticIDs> DiagID(new clang::DiagnosticIDs());
-    DiagnosticsEngine Diags(DiagID, &dopts);
+    TextDiagnosticPrinter *DiagClient = new clang::TextDiagnosticPrinter(llvm::errs(), &dopts, false);
+    DiagnosticsEngine Diags(DiagID, &dopts, DiagClient);
     SourceManager sm(Diags, myFiles, false);
     std::string filename = argv[1];//sm.getFileEntryForID(sm.getMainFileID())->tryGetRealPathName();
     std::cout << "FILENAME: " << "\"" << filename << "\"" << std::endl;
