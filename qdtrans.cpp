@@ -50,7 +50,7 @@ std::map<std::string, Replacements>* RepMap;
 
 const char* argv1;
 
-Replacement createAdjustedReplacementForCSR(CharSourceRange csr, ASTContext* TheContext, Replacements& reps, std::string text);
+Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, Replacements& reps, std::string text);
 
 // By implementing RecursiveASTVisitor, we can specify which AST nodes
 // we're interested in by overriding relevant methods.
@@ -67,7 +67,7 @@ public:
 
     bool VisitStmt(Stmt *s) {
         Stmt::child_iterator ChildIterator = s->child_begin();
-        CharSourceRange CSRToAddTo;
+        SourceRange SRToAddTo;
         bool inCrit = false;
         std::stringstream nodetext;
         std::string nodestring;
@@ -80,7 +80,7 @@ public:
                     if(MyFunDecl != 0) {
                         std::string name = MyFunDecl->getNameInfo().getName().getAsString();
                         if(ChildIterator != s->child_end() && name == "pthread_mutex_lock") {
-                            CSRToAddTo = CharSourceRange::getCharRange((*ChildIterator)->getSourceRange());
+                            SRToAddTo = (*ChildIterator)->getSourceRange();
                             inCrit = true;
                             nodetext.str("");
                             nodestring = "";
@@ -102,10 +102,10 @@ public:
                             (*ChildIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
                             os << ";\n"; //<< nodestring << "NL2\n";
                             std::cout << nodestring << std::endl;
-                            CharSourceRange csr = CSRToAddTo;
+                            SourceRange sr = SRToAddTo;
                             SourceManager& sm = TheContext->getSourceManager();
                             StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-                            Replacement rep = createAdjustedReplacementForCSR(csr, TheContext, (*RepMap)[filename.str()], nodetext.str());
+                            Replacement rep = createAdjustedReplacementForSR(sr, TheContext, (*RepMap)[filename.str()], nodetext.str());
                             Replacement& repr = rep;
                             std::cout << rep.toString() << std::endl; 
                             Replacements maprep = (*RepMap)[filename.str()];
@@ -128,10 +128,10 @@ public:
                     llvm::outs() << "NODE:\n";
                     (*ChildIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
                     os << ";\n"; //<< nodestring << "NL2\n";
-                    CharSourceRange csr = CharSourceRange::getCharRange((*ChildIterator)->getSourceRange());
+                    SourceRange sr = (*ChildIterator)->getSourceRange();
                     SourceManager& sm = TheContext->getSourceManager();
                     StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-                    Replacement rep = createAdjustedReplacementForCSR(csr, TheContext, (*RepMap)[filename.str()], nodetext.str());
+                    Replacement rep = createAdjustedReplacementForSR(sr, TheContext, (*RepMap)[filename.str()], nodetext.str());
                     Replacement& repr = rep;
                     std::cout << rep.toString() << std::endl; 
                     Replacements maprep = (*RepMap)[filename.str()];
@@ -189,12 +189,12 @@ void printUsage() {
     std::cout << "\nUsage:\n\tqdtrans <single input file> [Clang options]\n\n";
 }
 
-Replacement createAdjustedReplacementForCSR(CharSourceRange csr, ASTContext* TheContext, Replacements& reps, std::string text) {
+Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, Replacements& reps, std::string text) {
     SourceManager& sm = TheContext->getSourceManager();
-    FullSourceLoc fslstart = FullSourceLoc(csr.getBegin(), sm);
-    FullSourceLoc fslend = FullSourceLoc(csr.getEnd(), sm);
+    FullSourceLoc fslstart = FullSourceLoc(sr.getBegin(), sm);
+    FullSourceLoc fslend = FullSourceLoc(sr.getEnd(), sm);
     unsigned start = std::get<1>(fslstart.getDecomposedLoc());
-    unsigned length = 5;//std::get<1>(fslend.getDecomposedLoc())-start;
+    unsigned length = std::get<1>(fslend.getDecomposedLoc())-start;
     Range range = Range(start, length);
     std::vector<Range> rangevecin(1);
     rangevecin[0] = range;   
