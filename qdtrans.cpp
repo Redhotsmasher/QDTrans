@@ -260,14 +260,14 @@ int main(int argc, const char **argv) {
     }
     llvm::outs() << "[REPSEND]\n";
     Tool.applyAllReplacements(Rw);
-    auto myFileBuffer = myFiles.getBufferForFile(filename);
+    /*auto myFileBuffer = myFiles.getBufferForFile(filename);
     if(!myFileBuffer) {
         std::cerr << "Nope" << std::endl;
-    }
-    //auto myFileBuffer = Rw.getEditBuffer(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
+        }*/
+    auto myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
     llvm::outs() << "[BUFSTART]\n";
-    std::cout << std::string((*myFileBuffer)->getBufferStart()) << std::endl;
-    //myFileBuffer.write(llvm::outs());
+    //std::cout << std::string((*myFileBuffer)->getBufferStart()) << std::endl;
+    myFileBuffer->write(llvm::outs());
     llvm::outs() << "[BUFEND]\n";
     myFiles.PrintStats();
     return result;
