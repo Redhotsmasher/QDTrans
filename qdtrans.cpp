@@ -120,12 +120,13 @@ public:
                     Replacement& repr = rep;
                     std::cout << rep.toString() << std::endl;
                     Replacements reps = Replacements(repr);
-                    maprep = maprep.merge(reps);
+                    //maprep = maprep.merge(reps);
                     Replacement rep2 = createAdjustedReplacementForSR(sr, TheContext, maprep, "", false);
                     Replacement& repr2 = rep2;
                     Replacements reps2 = Replacements(repr2);
                     std::cout << rep2.toString() << std::endl;
-                    //maprep = maprep.merge(reps2);
+                    reps2 = reps.merge(reps2);
+                    maprep = reps2.merge(maprep);
                     (*RepMap)[filename.str()] = maprep;
                 }
             }
@@ -188,13 +189,10 @@ Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContex
         length = std::get<1>(fslend.getDecomposedLoc())-start;
     }
     std::cout << "Start: " << start << ", End: " << start+length << std::endl;
-    Range range = Range(start, length);
-    std::vector<Range> rangevecin(1);
-    rangevecin[0] = range;   
-    std::vector<Range> rangevecout = calculateRangesAfterReplacements(reps, rangevecin);
-    Range adjrange = rangevecout[0];
-    std::cout << "AdjStart: " << adjrange.getOffset() << ", AdjEnd: " << adjrange.getOffset()+adjrange.getLength() << std::endl;
-    Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), adjrange.getOffset(), adjrange.getLength(), StringRef(text));
+    unsigned adjstart = reps.getShiftedCodePosition(start);
+    unsigned adjend = reps.getShiftedCodePosition(start+length);
+    std::cout << "AdjStart: " << adjstart << ", AdjEnd: " << adjend << std::endl;
+    Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), start, length, StringRef(text));
     return newReplacement;
 }
 
