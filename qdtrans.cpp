@@ -45,11 +45,9 @@
 using namespace clang;
 using namespace clang::tooling;
 
-std::map<std::string, Replacements>* RepMap;
+std::map<std::string, std::vector<Replacement>>* RepMap;
 
-const char* argv1;
-
-Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, Replacements& reps, std::string text, bool injection);
+Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection);
 
 // By implementing RecursiveASTVisitor, we can specify which AST nodes
 // we're interested in by overriding relevant methods.
@@ -61,7 +59,8 @@ private:
 public:
     MyASTVisitor(ASTContext *C) : TheContext(C) {
         //LastContext = TheContext;
-        (*RepMap)[TheContext->getSourceManager().getFileEntryForID(TheContext->getSourceManager().getMainFileID())->getName()] = Replacements(); //Initializing the Replacements object
+        std::vector<Replacement> vec;
+        (*RepMap)[TheContext->getSourceManager().getFileEntryForID(TheContext->getSourceManager().getMainFileID())->getName()] = vec; //Initializing the Replacement vector
     }
 
     bool VisitStmt(Stmt *s) {
@@ -115,19 +114,15 @@ public:
                     SourceRange sr = (*ChildIterator)->getSourceRange();
                     SourceManager& sm = TheContext->getSourceManager();
                     StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-                    Replacements maprep = (*RepMap)[filename.str()];
-                    Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprep, os.str(), true);
-                    Replacement& repr = rep;
+                    std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                    Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, os.str(), true);
+                    maprepv.push_back(rep);
                     std::cout << rep.toString() << std::endl;
-                    Replacements reps = Replacements(repr);
                     //maprep = maprep.merge(reps);
-                    Replacement rep2 = createAdjustedReplacementForSR(sr, TheContext, maprep, "", false);
-                    Replacement& repr2 = rep2;
-                    Replacements reps2 = Replacements(repr2);
+                    Replacement rep2 = createAdjustedReplacementForSR(sr, TheContext, maprepv, "", false);
                     std::cout << rep2.toString() << std::endl;
-                    reps2 = reps.merge(reps2);
-                    maprep = reps2.merge(maprep);
-                    (*RepMap)[filename.str()] = maprep;
+                    maprepv.push_back(rep2);
+                    (*RepMap)[filename.str()] = maprepv;
                 }
             }
             ChildIterator++;
@@ -177,7 +172,7 @@ void printUsage() {
     std::cout << "\nUsage:\n\tqdtrans <single input file> [Clang options]\n\n";
 }
 
-Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, Replacements& reps, std::string text, bool injection) {
+Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection) {
     SourceManager& sm = TheContext->getSourceManager();
     FullSourceLoc fslstart = FullSourceLoc(sr.getBegin(), sm);
     FullSourceLoc fslend = FullSourceLoc(sr.getEnd(), sm);
@@ -188,11 +183,16 @@ Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContex
     } else {
         length = std::get<1>(fslend.getDecomposedLoc())-start;
     }
+    unsigned adjstart = start;
+    for(auto r : repv) {
+        if(r.getOffset() <= adjstart) {
+            printf("adjstart = %u+%lu-%u\n", adjstart, r.getReplacementText().size(), r.getLength());
+            adjstart = adjstart+r.getReplacementText().size()-r.getLength();
+        }
+    }
     std::cout << "Start: " << start << ", End: " << start+length << std::endl;
-    unsigned adjstart = reps.getShiftedCodePosition(start);
-    unsigned adjend = reps.getShiftedCodePosition(start+length);
-    std::cout << "AdjStart: " << adjstart << ", AdjEnd: " << adjend << std::endl;
-    Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), start, length, StringRef(text));
+    std::cout << "AdjStart: " << adjstart << ", AdjEnd: " << adjstart+length << std::endl;
+    Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), adjstart, length, StringRef(text));
     return newReplacement;
 }
 
@@ -213,8 +213,13 @@ int main(int argc, const char **argv) {
     CommonOptionsParser op(argc, argv, MyToolCategory);
     // create a new Clang Tool instance (a LibTooling environment)
     RefactoringTool Tool(op.getCompilations(), op.getSourcePathList());
-    argv1 = argv[1];
-    
+    const std::vector<std::string>& splistvec = op.getSourcePathList();
+    std::cout << "[SPLISTSTART]" << std::endl;
+    for(auto s : splistvec) {
+        std::cout << s << std::endl;
+    }
+    std::string filename = splistvec[0];
+    std::cout << "[SPLISTEND]" << std::endl;
     std::vector<std::string> args(argc-2);
     for(int i = 0; i < argc-2; i++) {
         args[i] = argv[i+2];
@@ -222,7 +227,8 @@ int main(int argc, const char **argv) {
     std::ifstream t(argv[1]);
     std::stringstream buffer;
     buffer << t.rdbuf();
-    RepMap = &Tool.getReplacements();
+    std::map<std::string, std::vector<Replacement>> rmap;
+    RepMap = &rmap;
     std::cout << RepMap << std::endl;
     int result = Tool.run(newFrontendActionFactory<MyASTClassAction>().get());
     auto& myFiles = Tool.getFiles();
@@ -233,29 +239,31 @@ int main(int argc, const char **argv) {
     TextDiagnosticPrinter *DiagClient = new clang::TextDiagnosticPrinter(llvm::errs(), &dopts, false);
     DiagnosticsEngine Diags(DiagID, &dopts, DiagClient);
     SourceManager sm(Diags, myFiles, false);
-    std::string filename = argv[1];//sm.getFileEntryForID(sm.getMainFileID())->tryGetRealPathName();
     std::cout << "FILENAME: " << "\"" << filename << "\"" << std::endl;
     const FileEntry *myFileEntry = myFiles.getFile(filename);
     
     LangOptions lopts;
     Rewriter Rw = Rewriter(sm, lopts);
     //sm.overrideFileContents(myFileEntry, myFileBuffer.get().get(), false);
-    Replacements mainreps = (*RepMap)[filename];
+    std::vector<Replacement> mainrepv = (*RepMap)[filename];
     llvm::outs() << "[REPSSTART]\n";
-    for(auto r : mainreps) {
+    for(auto r : mainrepv) {
         std::cout << r.toString() << std::endl;
+        r.apply(Rw);
+        auto myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
+        llvm::outs() << "[BUFSTART]\n";
+        myFileBuffer->write(llvm::outs());
+        llvm::outs() << "[BUFEND]\n";
     }
     llvm::outs() << "[REPSEND]\n";
-    Tool.applyAllReplacements(Rw);
     /*auto myFileBuffer = myFiles.getBufferForFile(filename);
     if(!myFileBuffer) {
         std::cerr << "Nope" << std::endl;
         }*/
-    auto myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
+    /*auto myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
     llvm::outs() << "[BUFSTART]\n";
-    //std::cout << std::string((*myFileBuffer)->getBufferStart()) << std::endl;
     myFileBuffer->write(llvm::outs());
-    llvm::outs() << "[BUFEND]\n";
+    llvm::outs() << "[BUFEND]\n";*/
     myFiles.PrintStats();
     return result;
 }
