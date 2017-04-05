@@ -47,7 +47,7 @@ using namespace clang::tooling;
 
 std::map<std::string, std::vector<Replacement>>* RepMap;
 
-Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection);
+Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection, int newlength);
 
 // By implementing RecursiveASTVisitor, we can specify which AST nodes
 // we're interested in by overriding relevant methods.
@@ -61,6 +61,12 @@ public:
         //LastContext = TheContext;
         std::vector<Replacement> vec;
         (*RepMap)[TheContext->getSourceManager().getFileEntryForID(TheContext->getSourceManager().getMainFileID())->getName()] = vec; //Initializing the Replacement vector
+        /*SourceManager& sm = TheContext->getSourceManager();
+        StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+        std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+        Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), 0, 0, "");
+        maprepv.push_back(newReplacement);
+        (*RepMap)[filename.str()] = maprepv;*/
     }
 
     bool VisitStmt(Stmt *s) {
@@ -94,6 +100,14 @@ public:
                     if(MyFunDecl != 0) {
                         std::string name = MyFunDecl->getNameInfo().getName().getAsString();
                         if(ChildIterator != s->child_end() && name == "pthread_mutex_unlock") {
+                            SourceManager& sm = TheContext->getSourceManager();
+                            StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                            std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                            Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, nodetext.str(), true, 0);
+                            maprepv.push_back(rep);
+                            std::cout << rep.toString() << std::endl;
+                            (*RepMap)[filename.str()] = maprepv;
+                    //maprepv.push_back(rep);
                             inCrit = false;
                         } else {
                             goelse = true;
@@ -110,16 +124,12 @@ public:
                     PrintingPolicy& ppr = pp;
                     llvm::outs() << "NODE:\n";
                     (*ChildIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                    os << ";\n"; //<< nodestring << "NL2\n";
                     SourceRange sr = (*ChildIterator)->getSourceRange();
                     SourceManager& sm = TheContext->getSourceManager();
                     StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
                     std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
-                    Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, os.str(), true);
-                    maprepv.push_back(rep);
-                    std::cout << rep.toString() << std::endl;
-                    //maprep = maprep.merge(reps);
-                    Replacement rep2 = createAdjustedReplacementForSR(sr, TheContext, maprepv, "", false);
+                    nodetext << os.str() << ";\n";
+                    Replacement rep2 = createAdjustedReplacementForSR(sr, TheContext, maprepv, "", false, nodestring.length()+2);
                     std::cout << rep2.toString() << std::endl;
                     maprepv.push_back(rep2);
                     (*RepMap)[filename.str()] = maprepv;
@@ -172,16 +182,20 @@ void printUsage() {
     std::cout << "\nUsage:\n\tqdtrans <single input file> [Clang options]\n\n";
 }
 
-Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection) {
+Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection, int newlength) {
     SourceManager& sm = TheContext->getSourceManager();
     FullSourceLoc fslstart = FullSourceLoc(sr.getBegin(), sm);
     FullSourceLoc fslend = FullSourceLoc(sr.getEnd(), sm);
     unsigned start = std::get<1>(fslstart.getDecomposedLoc());
     unsigned length;
-    if(injection == true) {
-        length = 0;
+    if(newlength == 0) {
+        if(injection == true) {
+            length = 0;
+        } else {
+            length = std::get<1>(fslend.getDecomposedLoc())-start;
+        }
     } else {
-        length = std::get<1>(fslend.getDecomposedLoc())-start;
+        length = newlength;
     }
     unsigned adjstart = start;
     for(auto r : repv) {
@@ -192,7 +206,7 @@ Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContex
     }
     std::cout << "Start: " << start << ", End: " << start+length << std::endl;
     std::cout << "AdjStart: " << adjstart << ", AdjEnd: " << adjstart+length << std::endl;
-    Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), adjstart, length, StringRef(text));
+    Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), start, length, StringRef(text));
     return newReplacement;
 }
 
@@ -251,7 +265,8 @@ int main(int argc, const char **argv) {
         std::cout << r.toString() << std::endl;
         r.apply(Rw);
         auto myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
-        llvm::outs() << "[BUFSTART]\n";
+        llvm::outs() << "[BUFSTART:" << myFileBuffer->size() << "]\n";
+        
         myFileBuffer->write(llvm::outs());
         llvm::outs() << "[BUFEND]\n";
     }
