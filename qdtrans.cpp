@@ -1,12 +1,3 @@
-//------------------------------------------------------------------------------
-// Clang rewriter sample. Demonstrates:
-//
-// * How to use RecursiveASTVisitor to find interesting AST nodes.
-// * How to use the Rewriter API to rewrite the source code.
-//
-// Eli Bendersky (eliben@gmail.com)
-// This code is in the public domain
-//------------------------------------------------------------------------------
 #include <cstdio>
 #include <memory>
 #include <sstream>
@@ -42,40 +33,73 @@
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 
+#include "clang/AST/ODRHash.h"
+
+typedef int* intptr;
+
+enum locality {UNDEF, GLOBAL, CRITLOCAL, ELSELOCAL}; // GLOBAL = global, CRITLOCAL = declared inside its critical section, ELSELOCAL = declared non-globally but outside its critical section.
+
+struct variable {
+    std::string namestr;
+    std::string typestr;
+    enum locality locality;
+    bool threadLocal;
+    bool pointer;
+    bool needsReturn;
+};
+
+struct criticalSection {
+    //bool needsRefactoring;
+    bool needsWait;
+    std::string lockname;
+    std::vector<struct variable*> accessedvars;
+    clang::Stmt* lockstmt;
+    clang::Stmt* unlockstmt;
+};
+
 using namespace clang;
 using namespace clang::tooling;
 
 std::map<std::string, std::vector<Replacement>>* RepMap;
+std::vector<struct criticalSection*> crits;
+
+Stmt* thestmt;
 
 Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection, int newlength);
 
+/* Returns true if sr1 < sr2, false otherwise */
+bool isSRLessThan(SourceRange sr1, SourceRange sr2, ASTContext* TheContext);
+
 // By implementing RecursiveASTVisitor, we can specify which AST nodes
 // we're interested in by overriding relevant methods.
-class MyASTVisitor : public RecursiveASTVisitor<MyASTVisitor> {
+class FindingASTVisitor : public RecursiveASTVisitor<FindingASTVisitor> {
 private:
     ASTContext *TheContext;
     //Rewriter &TheRewriter;
     //Replacements &TheReplacements;
 public:
-    MyASTVisitor(ASTContext *C) : TheContext(C) {
+    FindingASTVisitor(ASTContext *C) : TheContext(C) {
         //LastContext = TheContext;
         std::vector<Replacement> vec;
         (*RepMap)[TheContext->getSourceManager().getFileEntryForID(TheContext->getSourceManager().getMainFileID())->getName()] = vec; //Initializing the Replacement vector
-        /*SourceManager& sm = TheContext->getSourceManager();
+        SourceManager& sm = TheContext->getSourceManager();
         StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
         std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
         Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), 0, 0, "");
-        maprepv.push_back(newReplacement);
-        (*RepMap)[filename.str()] = maprepv;*/
+        maprepv.push_back(newReplacement); //Adding dummy replacement to prevent crashing
+        (*RepMap)[filename.str()] = maprepv;
     }
-
+    
     bool VisitStmt(Stmt *s) {
         Stmt::child_iterator ChildIterator = s->child_begin();
         SourceRange SRToAddTo;
         bool inCrit = false;
+        bool skip = false;
         std::stringstream nodetext;
         std::string nodestring;
         llvm::raw_string_ostream os(nodestring);
+        struct criticalSection* newcrit;
+        bool needspush = false;
         while(ChildIterator != s->child_end()) {
             if(inCrit == false) {
                 if(isa<CallExpr>(*ChildIterator)) {
@@ -84,60 +108,171 @@ public:
                     if(MyFunDecl != 0) {
                         std::string name = MyFunDecl->getNameInfo().getName().getAsString();
                         if(ChildIterator != s->child_end() && name == "pthread_mutex_lock") {
-                            SourceRange sr = (*ChildIterator)->getSourceRange();
-                            SRToAddTo = SourceRange(sr.getBegin(), sr.getEnd());
+                            //std::cout << "Found!" << std::endl;
                             inCrit = true;
+                            needspush = true;
                             nodetext.str("");
                             nodestring = "";
+                            newcrit = new criticalSection;
+                            newcrit->accessedvars = *(new std::vector<struct variable*>);
+                            newcrit->lockstmt = *ChildIterator;
+                            PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                            PrintingPolicy& ppr = pp;
+                            MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                            newcrit->lockname = os.str();
+                            //std::cout << "Lockname: " << newcrit->lockname << std::endl;
                         }
                     }
                 } 
             } else {
-                bool goelse = false;
                 if(isa<CallExpr>(*ChildIterator)) {
                     CallExpr* MyCallExpr = cast<CallExpr>(*ChildIterator);
                     FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
                     if(MyFunDecl != 0) {
                         std::string name = MyFunDecl->getNameInfo().getName().getAsString();
-                        if(ChildIterator != s->child_end() && name == "pthread_mutex_unlock") {
-                            SourceManager& sm = TheContext->getSourceManager();
-                            StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-                            std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
-                            Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, nodetext.str(), true, 0);
-                            maprepv.push_back(rep);
-                            std::cout << rep.toString() << std::endl;
-                            (*RepMap)[filename.str()] = maprepv;
-                    //maprepv.push_back(rep);
+                        if(name == "pthread_mutex_unlock") {
+                            PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                            PrintingPolicy& ppr = pp;
+                            nodestring = "";
+                            MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                            std::string lname = os.str();
+                            //std::cout << "Compared name: " << lname << std::endl;
+                            if(lname.compare(newcrit->lockname) == 0) {
+                                newcrit->unlockstmt = *ChildIterator;
+                            }
+                        } else if(name == "pthread_mutex_lock") {
+                            crits.push_back(newcrit);
+                            //std::cout << "Pushed!" << std::endl;
                             inCrit = false;
-                        } else {
-                            goelse = true;
+                            needspush = false;
+                            skip = true;
                         }
-                    } else {
-                        goelse = true;
+                    } 
+                } 
+            }
+            if(skip == false) {
+                ChildIterator++;
+            } else {
+                skip = false;
+            }
+            //std::cout << "needspush: " << needspush << std::endl;
+        }
+        if(needspush == true) {
+            crits.push_back(newcrit);
+            //std::cout << "Pushed!" << std::endl;
+        }
+        return true;
+    }
+
+    bool VisitDecl(Decl *d) {
+        if(isa<TranslationUnitDecl>(d)) {
+            d->dumpColor();
+        }
+        return true;
+    }
+};
+
+class ScanningASTVisitor : public RecursiveASTVisitor<ScanningASTVisitor> {
+private:
+    ASTContext *TheContext;
+    TranslationUnitDecl* TheTUD;
+public:
+    ScanningASTVisitor(ASTContext *C) : TheContext(C) {}
+
+    bool VisitExpr(Expr *e) {
+        if(isa<DeclRefExpr>(e)) {
+            for(auto c : crits) {
+                if((isSRLessThan(c->lockstmt->getSourceRange(), e->getSourceRange(), TheContext) == true) && (isSRLessThan(e->getSourceRange(), c->unlockstmt->getSourceRange(), TheContext) == true)) {
+                    //if(isa<FunctionDecl>(e->)
+                    DeclarationNameInfo declname = ((DeclRefExpr*)(e))->getNameInfo();
+                    std::string name = declname.getName().getAsString();
+                    bool dup = false;
+                    for(auto v : c->accessedvars) {
+                        if(v->namestr.compare(name) == 0) {
+                            dup = true;
+                        }
                     }
-                } else {
-                    goelse = true;
-                }
-                if(goelse == true) { //Deduplicated else section starts here
-                    nodestring = "";
-                    PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
-                    PrintingPolicy& ppr = pp;
-                    llvm::outs() << "NODE:\n";
-                    (*ChildIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                    SourceRange sr = (*ChildIterator)->getSourceRange();
-                    SourceManager& sm = TheContext->getSourceManager();
-                    StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-                    std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
-                    nodetext << os.str() << ";\n";
-                    Replacement rep2 = createAdjustedReplacementForSR(sr, TheContext, maprepv, "", false, nodestring.length()+2);
-                    std::cout << rep2.toString() << std::endl;
-                    maprepv.push_back(rep2);
-                    (*RepMap)[filename.str()] = maprepv;
+                    std::string tstr = ((DeclRefExpr*)(e))->getDecl()->getType().getAsString();
+                    const char* tstring = tstr.c_str();
+                    if((dup == false) && (strstr(tstring, "(") == NULL)) {
+                        struct variable* newvar = new struct variable;
+                        newvar->namestr = name;
+                        std::cout << "Name: " << name << std::endl;
+                        newvar->typestr = tstr;
+                        //newvar->typestr = declname.getNamedTypeInfo()->getType().getAsString();
+                        std::cout << "Type: " << newvar->typestr << std::endl;
+			if(strstr(tstring, "*") != NULL) {
+			    newvar->pointer = true;
+			} else {
+			    newvar->pointer = false;
+			}
+                        Decl* d = ((DeclRefExpr*)(e))->getDecl();
+                        SourceRange declsr = d->getSourceRange();
+                        newvar->threadLocal = false;
+                        if((isSRLessThan(c->lockstmt->getSourceRange(), declsr, TheContext) == true) && (isSRLessThan(declsr, c->unlockstmt->getSourceRange(), TheContext) == true)) {
+                            newvar->locality = CRITLOCAL;
+                            newvar->needsReturn = false;
+                        } else {
+                            if(TheTUD->containsDecl(d) == true) {
+                                newvar->locality = GLOBAL;
+                                newvar->threadLocal = ((strstr(tstring, "_Thread_local") != NULL) || (strstr(tstring, "thread_local")) != NULL || (strstr(tstring, "__thread") != NULL) || (strstr(tstring, "__declspec(thread)") != NULL));
+                                newvar->needsReturn = newvar->threadLocal;
+                            } else {
+                                newvar->locality = ELSELOCAL;
+                                newvar->needsReturn = true;
+                            }
+                        }
+                        c->accessedvars.push_back(newvar);
+                    }
                 }
             }
-            ChildIterator++;
-        } 
+        }
         return true;
+    }
+
+    bool VisitDecl(Decl *d) {
+        if(isa<TranslationUnitDecl>(d)) {
+            TheTUD = cast<TranslationUnitDecl>(d);
+        }
+        return true;
+    }
+};
+
+class ModifyingASTVisitor : public RecursiveASTVisitor<ModifyingASTVisitor> {
+private:
+    ASTContext *TheContext;
+    bool SRset = false;
+    SourceRange SRToAddTo;
+public:
+    ModifyingASTVisitor(ASTContext *C) : TheContext(C) {}
+
+    bool VisitDecl(Decl *d) {
+        if(isa<FunctionDecl>(d)) {
+            if((SRset == false) || (isSRLessThan(d->getSourceRange(), SRToAddTo, TheContext) == true)) {
+                SRToAddTo = d->getSourceRange();
+                SRset = true;
+            }
+        }
+        return true;
+    }
+
+    void AddStructs() {
+        for(unsigned i = 0; i < crits.size(); i++) {
+            std::stringstream nodetext;
+            nodetext << "\nstruct critSec" << i << "_msg {\n";
+            for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
+                if(crits[i]->accessedvars[v]->locality != GLOBAL) {
+                    nodetext << "    " << crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << "\n";
+                }
+            }
+            nodetext << "\n};\n";
+            SourceManager& sm = TheContext->getSourceManager();
+            StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+            std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+            Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, nodetext.str(), true, 0);
+            maprepv.push_back(rep);
+            (*RepMap)[filename.str()] = maprepv;
+        }
     }
 };
 
@@ -145,41 +280,54 @@ public:
 // by the Clang parser.
 class MyASTConsumer : public ASTConsumer {
 public:
-    MyASTConsumer(ASTContext *C) : Visitor(C) {}
+    MyASTConsumer(ASTContext *C) : FindingVisitor(C), ScanningVisitor(C), ModifyingVisitor(C) {}
 
   // Override the method that gets called for each parsed top-level
   // declaration.
-  virtual void HandleTranslationUnit(clang::ASTContext &Context) {
-    // Traversing the translation unit decl via a RecursiveASTVisitor
-    // will visit all nodes in the AST.
-    Visitor.TraverseDecl(Context.getTranslationUnitDecl());
-  }
+    virtual void HandleTranslationUnit(clang::ASTContext &Context) {
+        // Traversing the translation unit decl via a RecursiveASTVisitor
+        // will visit all nodes in the AST.
+        FindingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
+        std::cout << "Done finding.\n" << std::endl;
+        ScanningVisitor.TraverseDecl(Context.getTranslationUnitDecl());
+        std::cout << "Done scanning.\n" << std::endl;
+        //ModifyingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
+        
+    }
 
 private:
-  MyASTVisitor Visitor;
+    FindingASTVisitor FindingVisitor;
+    ScanningASTVisitor ScanningVisitor;
+    ModifyingASTVisitor ModifyingVisitor;
 };
 
 using namespace llvm;
 
 class MyASTClassAction : public clang::ASTFrontendAction {
 private:
-    //Replacements &TheReplacements;
-    //Rewriter TheRewriter;
-    //std::string TheCode;
 public:
     virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance &Compiler, llvm::StringRef InFile) {
-        //Rewriter &RwRef = Rw;
         auto r = std::unique_ptr<clang::ASTConsumer>(new MyASTConsumer(&Compiler.getASTContext()));
         return r;
     }
-
-    /*Rewriter& getRewriter() {
-        return TheRewriter;
-        }*/
 };
 
 void printUsage() {
     std::cout << "\nUsage:\n\tqdtrans <single input file> [Clang options]\n\n";
+}
+
+/* Returns true if sr1 < sr2, false otherwise */
+bool isSRLessThan(SourceRange sr1, SourceRange sr2, ASTContext* TheContext) {
+    SourceManager& sm = TheContext->getSourceManager();
+    FullSourceLoc fslend1 = FullSourceLoc(sr1.getEnd(), sm);
+    unsigned end1 = std::get<1>(fslend1.getDecomposedLoc());
+    FullSourceLoc fslstart2 = FullSourceLoc(sr2.getBegin(), sm);
+    unsigned start2 = std::get<1>(fslstart2.getDecomposedLoc());
+    if(start2 > end1) {
+        return true;
+    } else {
+        return false;
+    }
 }
 
 Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection, int newlength) {
@@ -210,6 +358,45 @@ Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContex
     return newReplacement;
 }
 
+void printCrits() {
+    std::cout << "[CRITSSTART]" << std::endl;
+    for(auto c : crits) {
+        std::cout << "Critical section belonging to lock '" << c->lockname << "' detected, with lockstatement '" << c->lockstmt << "' and unlock statement '" << c->unlockstmt << ".\nContains the following variables:" << std::endl;
+        for(auto v : c->accessedvars) {
+            std::string tloc;
+            std::string ptr;
+            std::string needsret;
+            if(v->threadLocal == true) {
+                tloc = "True";
+            } else {
+                tloc = "False";
+            }
+            if(v->pointer == true) {
+                ptr = "True";
+            } else {
+                ptr = "False";
+            }
+            if(v->needsReturn == true) {
+                needsret = "True";
+            } else {
+                needsret = "False";
+            }
+            std::cout << "    " << v->typestr << v->namestr << " of locality '" << v->locality << "'.\n        threadLocal: " << tloc << ", pointer: " << ptr << ", needsReturn: " << needsret << "." << std::endl;
+        }
+    }
+    std::cout << "[CRITSEND]" << std::endl;
+}
+
+void deleteCrits() {
+    for(auto c : crits) {
+        for(auto v : c->accessedvars) {
+            delete v;
+        }
+        //delete c->accessedvars;
+        delete c;
+    }
+}
+
 // Apply a custom category to all command-line options so that they are the
 // only ones displayed.
 static llvm::cl::OptionCategory MyToolCategory("qdtrans options");
@@ -223,6 +410,9 @@ static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
 static cl::extrahelp MoreHelp("\nUsage:\n\tqdtrans <single input file> [Clang options]\n\n");
 
 int main(int argc, const char **argv) {
+    int intorz = 73;
+    intptr ip = &intorz;
+    ip++;
     // parse the command-line args passed to your code
     CommonOptionsParser op(argc, argv, MyToolCategory);
     // create a new Clang Tool instance (a LibTooling environment)
@@ -244,30 +434,35 @@ int main(int argc, const char **argv) {
     std::map<std::string, std::vector<Replacement>> rmap;
     RepMap = &rmap;
     std::cout << RepMap << std::endl;
+    std::vector<struct criticalSection*> criticalSections;
+    crits = criticalSections;
     int result = Tool.run(newFrontendActionFactory<MyASTClassAction>().get());
     auto& myFiles = Tool.getFiles();
     
-    DiagnosticOptions dopts;
-    //TextDiagnosticPrinter *DiagClient = new clang::TextDiagnosticPrinter(llvm::errs(), &dopts, false);
-    IntrusiveRefCntPtr<clang::DiagnosticIDs> DiagID(new clang::DiagnosticIDs());
+    /*DiagnosticOptions dopts;
+    clang::DiagnosticIDs* DIDs = new clang::DiagnosticIDs();
+    IntrusiveRefCntPtr<clang::DiagnosticIDs>* DiagID = new IntrusiveRefCntPtr<clang::DiagnosticIDs>(DIDs);
     TextDiagnosticPrinter *DiagClient = new clang::TextDiagnosticPrinter(llvm::errs(), &dopts, false);
-    DiagnosticsEngine Diags(DiagID, &dopts, DiagClient);
-    SourceManager sm(Diags, myFiles, false);
+    DiagnosticsEngine Diags(*DiagID, &dopts, DiagClient);*/
+    clang::CompilerInstance CI;
+    CI.createDiagnostics();
+    SourceManager sm(CI.getDiagnostics(), myFiles, false);
     std::cout << "FILENAME: " << "\"" << filename << "\"" << std::endl;
     const FileEntry *myFileEntry = myFiles.getFile(filename);
     
     LangOptions lopts;
     Rewriter Rw = Rewriter(sm, lopts);
     //sm.overrideFileContents(myFileEntry, myFileBuffer.get().get(), false);
+    printCrits();
     std::vector<Replacement> mainrepv = (*RepMap)[filename];
     llvm::outs() << "[REPSSTART]\n";
     for(auto r : mainrepv) {
         std::cout << r.toString() << std::endl;
         r.apply(Rw);
-        auto myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
+        /*auto myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
         llvm::outs() << "[BUFSTART:" << myFileBuffer->size() << "]\n";
         
-        myFileBuffer->write(llvm::outs());
+        myFileBuffer->write(llvm::outs());*/
         llvm::outs() << "[BUFEND]\n";
     }
     llvm::outs() << "[REPSEND]\n";
@@ -275,10 +470,11 @@ int main(int argc, const char **argv) {
     if(!myFileBuffer) {
         std::cerr << "Nope" << std::endl;
         }*/
-    /*auto myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
+    auto myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
     llvm::outs() << "[BUFSTART]\n";
     myFileBuffer->write(llvm::outs());
-    llvm::outs() << "[BUFEND]\n";*/
+    llvm::outs() << "[BUFEND]\n";
     myFiles.PrintStats();
+    deleteCrits();
     return result;
 }
