@@ -241,8 +241,8 @@ public:
 class ModifyingASTVisitor : public RecursiveASTVisitor<ModifyingASTVisitor> {
 private:
     ASTContext *TheContext;
-    bool SRset = false;
     SourceRange SRToAddTo;
+    bool SRset = false;
 public:
     ModifyingASTVisitor(ASTContext *C) : TheContext(C) {}
 
@@ -261,7 +261,7 @@ public:
             std::stringstream nodetext;
             nodetext << "\nstruct critSec" << i << "_msg {\n";
             for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
-                if(crits[i]->accessedvars[v]->locality != GLOBAL) {
+                if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
                     nodetext << "    " << crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << "\n";
                 }
             }
