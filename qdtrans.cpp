@@ -8,6 +8,7 @@
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/AST/Type.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
@@ -75,8 +76,6 @@ bool isSRLessThan(SourceRange sr1, SourceRange sr2, ASTContext* TheContext);
 class FindingASTVisitor : public RecursiveASTVisitor<FindingASTVisitor> {
 private:
     ASTContext *TheContext;
-    //Rewriter &TheRewriter;
-    //Replacements &TheReplacements;
 public:
     FindingASTVisitor(ASTContext *C) : TheContext(C) {
         //LastContext = TheContext;
@@ -86,87 +85,112 @@ public:
         StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
         std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
         Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), 0, 0, "");
-        maprepv.push_back(newReplacement); //Adding dummy replacement to prevent crashing
+        maprepv.push_back(newReplacement); //Adding dummy replacement to prent crash when attempting o get unmodified buffer.
         (*RepMap)[filename.str()] = maprepv;
     }
-    
-    bool VisitStmt(Stmt *s) {
-        Stmt::child_iterator ChildIterator = s->child_begin();
-        SourceRange SRToAddTo;
-        bool inCrit = false;
-        bool skip = false;
-        std::stringstream nodetext;
-        std::string nodestring;
-        llvm::raw_string_ostream os(nodestring);
-        struct criticalSection* newcrit;
-        bool needspush = false;
-        while(ChildIterator != s->child_end()) {
-            if(inCrit == false) {
-                if(isa<CallExpr>(*ChildIterator)) {
-                    CallExpr* MyCallExpr = cast<CallExpr>(*ChildIterator);
-                    FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
-                    if(MyFunDecl != 0) {
-                        std::string name = MyFunDecl->getNameInfo().getName().getAsString();
-                        if(ChildIterator != s->child_end() && name == "pthread_mutex_lock") {
-                            //std::cout << "Found!" << std::endl;
-                            inCrit = true;
-                            needspush = true;
-                            nodetext.str("");
-                            nodestring = "";
-                            newcrit = new criticalSection;
-                            newcrit->accessedvars = *(new std::vector<struct variable*>);
-                            newcrit->lockstmt = *ChildIterator;
-                            PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
-                            PrintingPolicy& ppr = pp;
-                            MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                            newcrit->lockname = os.str();
-                            //std::cout << "Lockname: " << newcrit->lockname << std::endl;
+
+    void checkStatement(Stmt* stmt, struct criticalSection** newcrit, bool* inCrit, bool* needspush, bool* skip, unsigned depth, llvm::raw_string_ostream& os, std::string& nodestring, std::stringstream& nodetext) {
+        if(*inCrit == false) {
+            if(isa<CallExpr>(stmt)) {
+                CallExpr* MyCallExpr = cast<CallExpr>(stmt);
+                FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
+                if(MyFunDecl != 0) {
+                    std::string name = MyFunDecl->getNameInfo().getName().getAsString();
+                    if(name == "pthread_mutex_lock") {
+                        //std::cout << "Found!" << std::endl;
+                        *inCrit = true;
+                        *needspush = true;
+                        nodetext.str("");
+                        nodestring = "";
+                        (*newcrit) = new criticalSection;
+                        (*newcrit)->accessedvars = *(new std::vector<struct variable*>);
+                        (*newcrit)->lockstmt = stmt;
+                        PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                        PrintingPolicy& ppr = pp;
+                        MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                        (*newcrit)->lockname = os.str();
+                        std::cout << "New lock has lockname \"" << (*newcrit)->lockname << "\"." << std::endl;
+                        //std::cout << "Lockname: " << newcrit->lockname << std::endl;
+                    }
+                }
+            } 
+        } else {
+            if(isa<CallExpr>(stmt)) {
+                CallExpr* MyCallExpr = cast<CallExpr>(stmt);
+                FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
+                if(MyFunDecl != 0) {
+                    std::string name = MyFunDecl->getNameInfo().getName().getAsString();
+                    if(name == "pthread_mutex_unlock") {
+                        PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                        PrintingPolicy& ppr = pp;
+                        nodestring = "";
+                        MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                        std::string lname = os.str();
+                        std::cout << "Comparing \"" << lname << "\" and \"" << (*newcrit)->lockname << "\"." << std::endl;
+                        if(lname.compare((*newcrit)->lockname) == 0) {
+                            (*newcrit)->unlockstmt = stmt;
                         }
+                    } else if(name == "pthread_mutex_lock") {
+                        crits.push_back((*newcrit));
+                        //std::cout << "Pushed!" << std::endl;
+                        *inCrit = false;
+                        *needspush = false;
+                        *skip = true;
                     }
                 } 
-            } else {
-                if(isa<CallExpr>(*ChildIterator)) {
-                    CallExpr* MyCallExpr = cast<CallExpr>(*ChildIterator);
-                    FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
-                    if(MyFunDecl != 0) {
-                        std::string name = MyFunDecl->getNameInfo().getName().getAsString();
-                        if(name == "pthread_mutex_unlock") {
-                            PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
-                            PrintingPolicy& ppr = pp;
-                            nodestring = "";
-                            MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                            std::string lname = os.str();
-                            //std::cout << "Compared name: " << lname << std::endl;
-                            if(lname.compare(newcrit->lockname) == 0) {
-                                newcrit->unlockstmt = *ChildIterator;
-                            }
-                        } else if(name == "pthread_mutex_lock") {
-                            crits.push_back(newcrit);
-                            //std::cout << "Pushed!" << std::endl;
-                            inCrit = false;
-                            needspush = false;
-                            skip = true;
-                        }
-                    } 
-                } 
-            }
-            if(skip == false) {
-                ChildIterator++;
-            } else {
-                skip = false;
+            } 
+        }
+    }
+    
+    void checkStatements(Stmt* stmt, struct criticalSection** newcrit, bool* inCrit, bool* needspush, bool* skip, unsigned depth, llvm::raw_string_ostream& os, std::string& nodestring, std::stringstream& nodetext) {
+        Stmt::child_iterator ChildIterator = stmt->child_begin();
+        bool needspushlocal = false;
+        while(ChildIterator != stmt->child_end()) {
+            if(*ChildIterator != NULL) {
+                std::cout << "Depth: " << depth << ", type: " << stmt->getStmtClassName() << ", inCrit: " << *inCrit << std::endl;
+                checkStatement(*ChildIterator, newcrit, inCrit, &needspushlocal, skip, depth, os, nodestring, nodetext);
             }
             //std::cout << "needspush: " << needspush << std::endl;
+            if(*skip == false) {
+                checkStatements(*ChildIterator, newcrit, inCrit, NULL, skip, depth+1, os, nodestring, nodetext);
+                ChildIterator++;
+            } else {
+                *skip = false;
+            }
         }
-        if(needspush == true) {
-            crits.push_back(newcrit);
-            //std::cout << "Pushed!" << std::endl;
+        if(needspushlocal == true) {
+            crits.push_back((*newcrit));
+            std::cout << "Pushed!" << std::endl;
+            needspushlocal = false;
         }
-        return true;
     }
 
     bool VisitDecl(Decl *d) {
         if(isa<TranslationUnitDecl>(d)) {
             d->dumpColor();
+            TranslationUnitDecl* tud = cast<TranslationUnitDecl>(d);
+            DeclContext::decl_iterator DeclIterator = tud->decls_begin();
+            int i = 0;
+            bool inCrit = false;
+            bool skip = false;
+            std::stringstream nodetext;
+            std::string nodestring;
+            llvm::raw_string_ostream os(nodestring);
+            struct criticalSection* newcrit = NULL;
+            //bool needspush = false;
+            while(DeclIterator != tud->decls_end()) {
+                if(isa<FunctionDecl>(*DeclIterator)) {
+                    //std::cout << "Func: " << i << std::endl;
+                    //(*DeclIterator)->dumpColor();
+                    FunctionDecl* funcdecl = cast<FunctionDecl>(*DeclIterator);
+                    Stmt* funcbody = funcdecl->getBody();
+                    if(funcbody != NULL) {
+                        checkStatements(funcbody, &newcrit, &inCrit, NULL, &skip, 0, os, nodestring, nodetext);
+                    }
+                    i++;
+                }
+                DeclIterator++;
+            }
         }
         return true;
     }
@@ -194,7 +218,7 @@ public:
                     }
                     std::string tstr = ((DeclRefExpr*)(e))->getDecl()->getType().getAsString();
                     const char* tstring = tstr.c_str();
-                    if((dup == false) && (strstr(tstring, "(") == NULL)) {
+                    if((dup == false) && (isa<FunctionDecl>(((DeclRefExpr*)(e))->getDecl()) == false)) {
                         struct variable* newvar = new struct variable;
                         newvar->namestr = name;
                         std::cout << "Name: " << name << std::endl;
