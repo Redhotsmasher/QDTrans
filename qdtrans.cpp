@@ -52,8 +52,10 @@ struct variable {
 struct criticalSection {
     //bool needsRefactoring;
     bool needsWait;
+    bool noMsgStruct;
     std::string lockname;
     std::vector<struct variable*> accessedvars;
+    signed depth;
     clang::Stmt* lockstmt;
     clang::Stmt* unlockstmt;
 };
@@ -105,6 +107,7 @@ public:
                         (*newcrit) = new criticalSection;
                         (*newcrit)->accessedvars = *(new std::vector<struct variable*>);
                         (*newcrit)->lockstmt = stmt;
+                        (*newcrit)->depth = depth;
                         PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                         PrintingPolicy& ppr = pp;
                         MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
@@ -129,6 +132,7 @@ public:
                         std::cout << "Comparing \"" << lname << "\" and \"" << (*newcrit)->lockname << "\"." << std::endl;
                         if(lname.compare((*newcrit)->lockname) == 0) {
                             (*newcrit)->unlockstmt = stmt;
+                            (*newcrit)->depth = depth-(*newcrit)->depth;
                         }
                     } else if(name == "pthread_mutex_lock") {
                         crits.push_back((*newcrit));
@@ -280,22 +284,29 @@ public:
         return true;
     }
 
-    void AddStructs() {
+    void AddStructs(bool addEmptyStructs) {
+        std::cout << "Adding structs..." << std::endl;
         for(unsigned i = 0; i < crits.size(); i++) {
             std::stringstream nodetext;
-            nodetext << "\nstruct critSec" << i << "_msg {\n";
+            nodetext << "struct critSec" << i << "_msg {\n";
+            unsigned varcount = 0;
             for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
                 if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
                     nodetext << "    " << crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << "\n";
                 }
             }
-            nodetext << "\n};\n";
-            SourceManager& sm = TheContext->getSourceManager();
-            StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-            std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
-            Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, nodetext.str(), true, 0);
-            maprepv.push_back(rep);
-            (*RepMap)[filename.str()] = maprepv;
+            nodetext << "\n};\n\n";
+            if(varcount > 0 || addEmptyStructs == true) {
+                crits[i]->noMsgStruct = false;
+                SourceManager& sm = TheContext->getSourceManager();
+                StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, nodetext.str(), true, 0);
+                maprepv.push_back(rep);
+                (*RepMap)[filename.str()] = maprepv;
+            } else {
+                crits[i]->noMsgStruct = true;
+            }
         }
     }
 };
@@ -315,8 +326,8 @@ public:
         std::cout << "Done finding.\n" << std::endl;
         ScanningVisitor.TraverseDecl(Context.getTranslationUnitDecl());
         std::cout << "Done scanning.\n" << std::endl;
-        //ModifyingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
-        
+        ModifyingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
+        ModifyingVisitor.AddStructs(false);
     }
 
 private:
@@ -385,7 +396,13 @@ Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContex
 void printCrits() {
     std::cout << "[CRITSSTART]" << std::endl;
     for(auto c : crits) {
-        std::cout << "Critical section belonging to lock '" << c->lockname << "' detected, with lockstatement '" << c->lockstmt << "' and unlock statement '" << c->unlockstmt << ".\nContains the following variables:" << std::endl;
+        std::cout << "Critical section belonging to lock '" << c->lockname << "' detected, with depth " << c->depth << ", lockstatement '" << c->lockstmt << "' and unlock statement '" << c->unlockstmt << std::endl;
+        if(c->noMsgStruct == true) {
+            std::cout << "Has no message struct." << std::endl;
+        } else {
+            std::cout << "Has a message struct." << std::endl;
+        }
+        std::cout << "Contains the following variables:" << std::endl;
         for(auto v : c->accessedvars) {
             std::string tloc;
             std::string ptr;
