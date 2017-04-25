@@ -148,24 +148,20 @@ public:
     
     void checkStatements(Stmt* stmt, struct criticalSection** newcrit, bool* inCrit, bool* needspush, bool* skip, unsigned depth, llvm::raw_string_ostream& os, std::string& nodestring, std::stringstream& nodetext) {
         Stmt::child_iterator ChildIterator = stmt->child_begin();
-        bool needspushlocal = false;
         while(ChildIterator != stmt->child_end()) {
             if(*ChildIterator != NULL) {
                 std::cout << "Depth: " << depth << ", type: " << stmt->getStmtClassName() << ", inCrit: " << *inCrit << std::endl;
-                checkStatement(*ChildIterator, newcrit, inCrit, &needspushlocal, skip, depth, os, nodestring, nodetext);
+                checkStatement(*ChildIterator, newcrit, inCrit, needspush, skip, depth, os, nodestring, nodetext);
             }
             //std::cout << "needspush: " << needspush << std::endl;
             if(*skip == false) {
-                checkStatements(*ChildIterator, newcrit, inCrit, NULL, skip, depth+1, os, nodestring, nodetext);
+                if(*ChildIterator != NULL) {
+                    checkStatements(*ChildIterator, newcrit, inCrit, needspush, skip, depth+1, os, nodestring, nodetext);
+                }
                 ChildIterator++;
             } else {
                 *skip = false;
             }
-        }
-        if(needspushlocal == true) {
-            crits.push_back((*newcrit));
-            std::cout << "Pushed!" << std::endl;
-            needspushlocal = false;
         }
     }
 
@@ -181,7 +177,7 @@ public:
             std::string nodestring;
             llvm::raw_string_ostream os(nodestring);
             struct criticalSection* newcrit = NULL;
-            //bool needspush = false;
+            bool needspush = false;
             while(DeclIterator != tud->decls_end()) {
                 if(isa<FunctionDecl>(*DeclIterator)) {
                     //std::cout << "Func: " << i << std::endl;
@@ -189,7 +185,12 @@ public:
                     FunctionDecl* funcdecl = cast<FunctionDecl>(*DeclIterator);
                     Stmt* funcbody = funcdecl->getBody();
                     if(funcbody != NULL) {
-                        checkStatements(funcbody, &newcrit, &inCrit, NULL, &skip, 0, os, nodestring, nodetext);
+                        checkStatements(funcbody, &newcrit, &inCrit, &needspush, &skip, 0, os, nodestring, nodetext);
+                        if(needspush == true) {
+                            crits.push_back(newcrit);
+                            std::cout << "Pushed!" << std::endl;
+                            needspush = false;
+                        }
                     }
                     i++;
                 }
@@ -294,8 +295,9 @@ public:
                 if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
                     nodetext << "    " << crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << "\n";
                 }
+                varcount++;
             }
-            nodetext << "\n};\n\n";
+            nodetext << "};\n\n";
             if(varcount > 0 || addEmptyStructs == true) {
                 crits[i]->noMsgStruct = false;
                 SourceManager& sm = TheContext->getSourceManager();
