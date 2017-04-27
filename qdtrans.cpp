@@ -55,9 +55,12 @@ struct criticalSection {
     bool noMsgStruct;
     std::string lockname;
     std::vector<struct variable*> accessedvars;
+    signed lockdepth;
     signed depth;
     clang::Stmt* lockstmt;
     clang::Stmt* unlockstmt;
+    clang::FunctionDecl* funcwlock;
+    clang::FunctionDecl* funcwunlock;
 };
 
 using namespace clang;
@@ -72,6 +75,8 @@ Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContex
 
 /* Returns true if sr1 < sr2, false otherwise */
 bool isSRLessThan(SourceRange sr1, SourceRange sr2, ASTContext* TheContext);
+
+void printCrits();
 
 // By implementing RecursiveASTVisitor, we can specify which AST nodes
 // we're interested in by overriding relevant methods.
@@ -91,7 +96,7 @@ public:
         (*RepMap)[filename.str()] = maprepv;
     }
 
-    void checkStatement(Stmt* stmt, struct criticalSection** newcrit, bool* inCrit, bool* needspush, bool* skip, unsigned depth, llvm::raw_string_ostream& os, std::string& nodestring, std::stringstream& nodetext) {
+    void checkStatement(Stmt* stmt, struct criticalSection** newcrit, bool* inCrit, bool* needspush, bool* skip, unsigned depth, llvm::raw_string_ostream& os, std::string& nodestring, std::stringstream& nodetext, FunctionDecl* fdecl, unsigned fdepth) {
         if(*inCrit == false) {
             if(isa<CallExpr>(stmt)) {
                 CallExpr* MyCallExpr = cast<CallExpr>(stmt);
@@ -107,6 +112,9 @@ public:
                         (*newcrit) = new criticalSection;
                         (*newcrit)->accessedvars = *(new std::vector<struct variable*>);
                         (*newcrit)->lockstmt = stmt;
+                        (*newcrit)->unlockstmt = NULL;
+                        (*newcrit)->funcwlock = fdecl;
+                        (*newcrit)->lockdepth = fdepth-lockdepth;
                         (*newcrit)->depth = depth;
                         PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                         PrintingPolicy& ppr = pp;
@@ -132,10 +140,15 @@ public:
                         std::cout << "Comparing \"" << lname << "\" and \"" << (*newcrit)->lockname << "\"." << std::endl;
                         if(lname.compare((*newcrit)->lockname) == 0) {
                             (*newcrit)->unlockstmt = stmt;
+                            (*newcrit)->funcwunlock = fdecl;
                             (*newcrit)->depth = depth-(*newcrit)->depth;
                         }
                     } else if(name == "pthread_mutex_lock") {
-                        crits.push_back((*newcrit));
+                        if((*newcrit)->unlockstmt != NULL) {
+                            crits.push_back((*newcrit));
+                        } else {
+                            delete (*newcrit);
+                        }
                         //std::cout << "Pushed!" << std::endl;
                         *inCrit = false;
                         *needspush = false;
@@ -146,17 +159,38 @@ public:
         }
     }
     
-    void checkStatements(Stmt* stmt, struct criticalSection** newcrit, bool* inCrit, bool* needspush, bool* skip, unsigned depth, llvm::raw_string_ostream& os, std::string& nodestring, std::stringstream& nodetext) {
+    void checkStatements(Stmt* stmt, struct criticalSection** newcrit, bool* inCrit, bool* needspush, bool* skip, unsigned depth, llvm::raw_string_ostream& os, std::string& nodestring, std::stringstream& nodetext, std::vector<FunctionDecl*>* fstack) {
+        std::cout << "Depth: " << depth << ", type: " << stmt->getStmtClassName() << ", inCrit: " << *inCrit << " inside function '" << (*fstack)[fstack->size()-1]->getNameInfo().getAsString() << "'." << std::endl;
+        if(isa<CallExpr>(stmt)) {
+            CallExpr* cx = cast<CallExpr>(stmt);
+            FunctionDecl* fdecl = cx->getDirectCallee()->getCanonicalDecl();
+            std::cout << "About to enter function " << fdecl << " with body top stmt " << fdecl->getBody() << ", isDefined() = " << fdecl->isDefined() << " and willHaveBody() = " << fdecl->willHaveBody() << "." << std::endl;
+            if(fdecl != NULL && fdecl->hasBody() == true) {
+                std::string fname = fdecl->getNameInfo().getAsString();
+                std::cout << "Entering '" << fname << "'..." << std::endl;
+                bool match = false;
+                for(unsigned i = 0; i < fstack->size(); i++) {
+                    if(fname.compare((*fstack)[i]->getNameInfo().getAsString()) == 0) {
+                        match = true;
+                        std::cout << "Aborting recursion to avoid infinite loop." << std::endl;
+                    }
+                }
+                if(match == false) {
+                    fstack->push_back(fdecl);
+                    checkStatements(fdecl->getBody(), newcrit, inCrit, needspush, skip, depth+1, os, nodestring, nodetext, fstack);
+                    fstack->pop_back();
+                }
+            }
+        }
         Stmt::child_iterator ChildIterator = stmt->child_begin();
         while(ChildIterator != stmt->child_end()) {
             if(*ChildIterator != NULL) {
-                std::cout << "Depth: " << depth << ", type: " << stmt->getStmtClassName() << ", inCrit: " << *inCrit << std::endl;
-                checkStatement(*ChildIterator, newcrit, inCrit, needspush, skip, depth, os, nodestring, nodetext);
+                checkStatement(*ChildIterator, newcrit, inCrit, needspush, skip, depth, os, nodestring, nodetext, (*fstack)[fstack->size()-1], fstack->size()-1);
             }
             //std::cout << "needspush: " << needspush << std::endl;
             if(*skip == false) {
                 if(*ChildIterator != NULL) {
-                    checkStatements(*ChildIterator, newcrit, inCrit, needspush, skip, depth+1, os, nodestring, nodetext);
+                    checkStatements(*ChildIterator, newcrit, inCrit, needspush, skip, depth+1, os, nodestring, nodetext, fstack);
                 }
                 ChildIterator++;
             } else {
@@ -178,6 +212,7 @@ public:
             llvm::raw_string_ostream os(nodestring);
             struct criticalSection* newcrit = NULL;
             bool needspush = false;
+            std::vector<FunctionDecl*> fstack;
             while(DeclIterator != tud->decls_end()) {
                 if(isa<FunctionDecl>(*DeclIterator)) {
                     //std::cout << "Func: " << i << std::endl;
@@ -185,12 +220,15 @@ public:
                     FunctionDecl* funcdecl = cast<FunctionDecl>(*DeclIterator);
                     Stmt* funcbody = funcdecl->getBody();
                     if(funcbody != NULL) {
-                        checkStatements(funcbody, &newcrit, &inCrit, &needspush, &skip, 0, os, nodestring, nodetext);
+                        std::string fname = funcdecl->getNameInfo().getAsString();
+                        fstack.push_back(funcdecl);
+                        checkStatements(funcbody, &newcrit, &inCrit, &needspush, &skip, 0, os, nodestring, nodetext, &fstack);
                         if(needspush == true) {
                             crits.push_back(newcrit);
                             std::cout << "Pushed!" << std::endl;
                             needspush = false;
                         }
+                        fstack.pop_back();
                     }
                     i++;
                 }
@@ -211,6 +249,9 @@ public:
     bool VisitExpr(Expr *e) {
         if(isa<DeclRefExpr>(e)) {
             for(auto c : crits) {
+                SourceRange sre = e->getSourceRange();
+                SourceRange srl = c->lockstmt->getSourceRange();
+                SourceRange sru = c->unlockstmt->getSourceRange();
                 if((isSRLessThan(c->lockstmt->getSourceRange(), e->getSourceRange(), TheContext) == true) && (isSRLessThan(e->getSourceRange(), c->unlockstmt->getSourceRange(), TheContext) == true)) {
                     //if(isa<FunctionDecl>(e->)
                     DeclarationNameInfo declname = ((DeclRefExpr*)(e))->getNameInfo();
@@ -311,6 +352,37 @@ public:
             }
         }
     }
+
+    void TransformFunctions(bool useEmptyStructs) {
+        std::cout << "Transforming functions..." << std::endl;
+        for(unsigned i = 0; i < crits.size(); i++) {
+            std::stringstream nodetext;
+            std::stringstream functext;
+            nodetext << "    struct critSec" << i << "_msg cs" << i << "msg;\n";
+            unsigned varcount = 0;
+            for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
+                if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
+                    nodetext << "    cs" << i << "msg." << crits[i]->accessedvars[v]->namestr << " = " << crits[i]->accessedvars[v]->namestr << ";\n";
+                }
+                varcount++;
+            }
+            unsigned currdepth;
+            std::vector<Stmt*> lstack;
+            std::vector<Stmt*> ulstack;
+            while(lstack.empty() == false && 
+            if(varcount > 0 || addEmptyStructs == true) {
+                crits[i]->noMsgStruct = false;
+                SourceManager& sm = TheContext->getSourceManager();
+                StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, nodetext.str(), true, 0);
+                maprepv.push_back(rep);
+                (*RepMap)[filename.str()] = maprepv;
+            } else {
+                crits[i]->noMsgStruct = true;
+            }
+        }
+    }
 };
 
 // Implementation of the ASTConsumer interface for reading an AST produced
@@ -330,6 +402,7 @@ public:
         std::cout << "Done scanning.\n" << std::endl;
         ModifyingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
         ModifyingVisitor.AddStructs(false);
+        printCrits();
     }
 
 private:
@@ -396,9 +469,11 @@ Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContex
 }
 
 void printCrits() {
-    std::cout << "[CRITSSTART]" << std::endl;
+    std::cout << "[CRITSSTART]\n" << std::endl;
     for(auto c : crits) {
-        std::cout << "Critical section belonging to lock '" << c->lockname << "' detected, with depth " << c->depth << ", lockstatement '" << c->lockstmt << "' and unlock statement '" << c->unlockstmt << std::endl;
+        std::string lfname = c->funcwlock->getNameInfo().getAsString();
+        std::string ulfname = c->funcwunlock->getNameInfo().getAsString();
+        std::cout << "Critical section belonging to lock '" << c->lockname << "' detected, with depth " << c->depth << ", lockstatement '" << c->lockstmt << "', residing in function '" << lfname << "', and unlock statement '" << c->unlockstmt << "', residing in function '" << ulfname << "'." << std::endl;
         if(c->noMsgStruct == true) {
             std::cout << "Has no message struct." << std::endl;
         } else {
@@ -426,6 +501,7 @@ void printCrits() {
             }
             std::cout << "    " << v->typestr << v->namestr << " of locality '" << v->locality << "'.\n        threadLocal: " << tloc << ", pointer: " << ptr << ", needsReturn: " << needsret << "." << std::endl;
         }
+        std::cout << std::endl;
     }
     std::cout << "[CRITSEND]" << std::endl;
 }
@@ -496,7 +572,6 @@ int main(int argc, const char **argv) {
     LangOptions lopts;
     Rewriter Rw = Rewriter(sm, lopts);
     //sm.overrideFileContents(myFileEntry, myFileBuffer.get().get(), false);
-    printCrits();
     std::vector<Replacement> mainrepv = (*RepMap)[filename];
     llvm::outs() << "[REPSSTART]\n";
     for(auto r : mainrepv) {
