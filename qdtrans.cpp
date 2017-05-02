@@ -63,6 +63,11 @@ struct criticalSection {
     clang::FunctionDecl* funcwunlock;
 };
 
+struct recursionStackEntry {
+    clang::Stmt* stmt;
+    unsigned iternum;
+};
+
 using namespace clang;
 using namespace clang::tooling;
 
@@ -114,7 +119,7 @@ public:
                         (*newcrit)->lockstmt = stmt;
                         (*newcrit)->unlockstmt = NULL;
                         (*newcrit)->funcwlock = fdecl;
-                        (*newcrit)->lockdepth = fdepth-lockdepth;
+                        (*newcrit)->lockdepth = depth-fdepth;
                         (*newcrit)->depth = depth;
                         PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                         PrintingPolicy& ppr = pp;
@@ -334,7 +339,7 @@ public:
             unsigned varcount = 0;
             for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
                 if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
-                    nodetext << "    " << crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << "\n";
+                    nodetext << "    " << crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << ";\n";
                 }
                 varcount++;
             }
@@ -367,9 +372,72 @@ public:
                 varcount++;
             }
             unsigned currdepth;
-            std::vector<Stmt*> lstack;
-            std::vector<Stmt*> ulstack;
-            while(lstack.empty() == false && 
+            std::vector<struct recursionStackEntry> lstack;
+            std::vector<struct recursionStackEntry> ulstack;
+            struct recursionStackEntry rse;
+            rse.iternum = 0;
+            Stmt* topBody = crits[i]->funcwlock->getBody();
+            Stmt* currBody = topBody;
+            Stmt::child_iterator topIterator = topBody->child_begin();
+            Stmt::child_iterator currIterator = topIterator;
+            while(lstack.empty() == false || topIterator != topBody->child_end()) {
+                if(currIterator == currBody->child_end()) {
+                    if(*currIterator == crits[i]->lockstmt) {
+                        break;
+                    } else {
+                        if((*currIterator)->child_begin() != NULL) {
+                            rse.stmt = currBody;
+                            rse.iternum = iternum;
+                            lstack.push_back(rse);
+                            currBody = (*currIterator);
+                            iternum = 0;
+                            currIterator = currBody->child_begin();
+                        } else {
+                            iternum++;
+                            currIterator++;
+                        }
+                    }
+                } else {
+                    rse = lstack.pop_back();
+                    currBody = rse.stmt;
+                    iternum = rse.iternum;
+                    currIterator = currBody->child_begin();
+                    for(unsigned i = 0; i < iternum; i++) {
+                        currIterator++;
+                    }
+                }
+            }
+            topBody = crits[i]->funcwunlock->getBody();
+            currBody = topBody;
+            topIterator = topBody->child_begin();
+            currIterator = topIterator;
+            while(lstack.empty() == false || topIterator != topBody->child_end()) {
+                if(currIterator == currBody->child_end()) {
+                    if(*currIterator == crits[i]->unlockstmt) {
+                        break;
+                    } else {
+                        if((*currIterator)->child_begin() != NULL) {
+                            rse.stmt = currBody;
+                            rse.iternum = iternum;
+                            ulstack.push_back(rse);
+                            currBody = (*currIterator);
+                            iternum = 0;
+                            currIterator = currBody->child_begin();
+                        } else {
+                            iternum++;
+                            currIterator++;
+                        }
+                    }
+                } else {
+                    rse = ulstack.pop_back();
+                    currBody = rse.stmt;
+                    iternum = rse.iternum;
+                    currIterator = currBody->child_begin();
+                    for(unsigned i = 0; i < iternum; i++) {
+                        currIterator++;
+                    }
+                }
+            }
             if(varcount > 0 || addEmptyStructs == true) {
                 crits[i]->noMsgStruct = false;
                 SourceManager& sm = TheContext->getSourceManager();
@@ -473,7 +541,7 @@ void printCrits() {
     for(auto c : crits) {
         std::string lfname = c->funcwlock->getNameInfo().getAsString();
         std::string ulfname = c->funcwunlock->getNameInfo().getAsString();
-        std::cout << "Critical section belonging to lock '" << c->lockname << "' detected, with depth " << c->depth << ", lockstatement '" << c->lockstmt << "', residing in function '" << lfname << "', and unlock statement '" << c->unlockstmt << "', residing in function '" << ulfname << "'." << std::endl;
+        std::cout << "Critical section belonging to lock '" << c->lockname << "' detected, with depth " << c->depth << ", lockdepth " << c->lockdepth << ", lockstatement '" << c->lockstmt << "', residing in function '" << lfname << "', and unlock statement '" << c->unlockstmt << "', residing in function '" << ulfname << "'." << std::endl;
         if(c->noMsgStruct == true) {
             std::cout << "Has no message struct." << std::endl;
         } else {
@@ -499,7 +567,7 @@ void printCrits() {
             } else {
                 needsret = "False";
             }
-            std::cout << "    " << v->typestr << v->namestr << " of locality '" << v->locality << "'.\n        threadLocal: " << tloc << ", pointer: " << ptr << ", needsReturn: " << needsret << "." << std::endl;
+            std::cout << "    " << v->typestr << " " << v->namestr << " of locality '" << v->locality << "'.\n        threadLocal: " << tloc << ", pointer: " << ptr << ", needsReturn: " << needsret << "." << std::endl;
         }
         std::cout << std::endl;
     }
@@ -581,7 +649,7 @@ int main(int argc, const char **argv) {
         llvm::outs() << "[BUFSTART:" << myFileBuffer->size() << "]\n";
         
         myFileBuffer->write(llvm::outs());*/
-        llvm::outs() << "[BUFEND]\n";
+        //llvm::outs() << "[BUFEND]\n";
     }
     llvm::outs() << "[REPSEND]\n";
     /*auto myFileBuffer = myFiles.getBufferForFile(filename);
