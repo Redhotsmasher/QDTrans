@@ -367,9 +367,19 @@ public:
             unsigned varcount = 0;
             for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
                 if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
-                    nodetext << "    cs" << i << "msg." << crits[i]->accessedvars[v]->namestr << " = " << crits[i]->accessedvars[v]->namestr << ";\n";
+                    nodetext << "    cs" << i << "msg." << crits[i]->accessedvars[v]->namestr << " = " << crits[i]->accessedvars[v]->namestr << ";\n\n";
                 }
                 varcount++;
+            }
+            functext << "void critSec" << i << "(unsigned int sz, void* msgP) {\n";
+            if(varcount > 0 || useEmptyStructs == true) {
+                functext << "    critSec" << i << "_msg* cs" << i << "msg = (critSec" << i << "_msg*)msgP;\n";
+                for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
+                    if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
+                        nodetext << "    " crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << " = " << "cs" << i << "msg->" crits[i]->accessedvars[v]->namestr << ";\n";
+                    }
+                    varcount++;
+                }
             }
             unsigned currdepth;
             std::vector<struct recursionStackEntry> lstack;
@@ -380,63 +390,110 @@ public:
             Stmt* currBody = topBody;
             Stmt::child_iterator topIterator = topBody->child_begin();
             Stmt::child_iterator currIterator = topIterator;
-            while(lstack.empty() == false || topIterator != topBody->child_end()) {
-                if(currIterator == currBody->child_end()) {
-                    if(*currIterator == crits[i]->lockstmt) {
-                        break;
-                    } else {
-                        if((*currIterator)->child_begin() != NULL) {
-                            rse.stmt = currBody;
-                            rse.iternum = iternum;
-                            lstack.push_back(rse);
-                            currBody = (*currIterator);
-                            iternum = 0;
-                            currIterator = currBody->child_begin();
+            if(crits[i]->depth == 0) {
+                // Flat case
+                while(*topIterator != crits[i]->lockstmt) {
+                    topIterator++;
+                }
+                topIterator++;
+                while(*topIterator != crits[i]->unlockstmt) {
+                    bool isUnlock = false;
+                    if(<CallExpr>(*topIterator)) {
+                        CallExpr* MyCallExpr = cast<CallExpr>(stmt);
+                        if(name == "pthread_mutex_unlock") {
+                            PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                            PrintingPolicy& ppr = pp;
+                            std::string nodestring;
+                            llvm::raw_string_ostream os(nodestring);
+                            MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                            std::string lname = os.str();
+                            if(lname.compare(crits[i]->lockname) == 0) {
+                                isUnlock = true;
+                            } else {
+                                for(unsigned j = 0; j < crits.size(); j++) {
+                                    for(unsigned v = 0; v < crits[j]->accessedvars.size(); v++) {
+                                        if(v->typestr.compare("pthread_mutex_t") == 0) {
+                                            if(lname.compare(crits[j]->accessedvars[v]->namestr) == 0) {
+                                                isUnlock = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if(isUnlock == false) {
+                        PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                        PrintingPolicy& ppr = pp;
+                        std::string nodestring;
+                        llvm::raw_string_ostream os(nodestring);
+                        MyCallExpr->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                        nodetext << "    " << os.str() << ";\n";
+                    }
+                    topIterator++;
+                }
+            } else if(crits[i]->funcwlock == crits[i]->funcwunlock) {
+                while(lstack.empty() == false || topIterator != topBody->child_end()) {
+                    if(currIterator == currBody->child_end()) {
+                        if(*currIterator == crits[i]->lockstmt) {
+                            break;
                         } else {
-                            iternum++;
+                            if((*currIterator)->child_begin() != NULL) {
+                                rse.stmt = currBody;
+                                rse.iternum = iternum;
+                                lstack.push_back(rse);
+                                currBody = (*currIterator);
+                                iternum = 0;
+                                currIterator = currBody->child_begin();
+                            } else {
+                                iternum++;
+                                currIterator++;
+                            }
+                        }
+                    } else {
+                        rse = lstack.pop_back();
+                        currBody = rse.stmt;
+                        iternum = rse.iternum;
+                        currIterator = currBody->child_begin();
+                        for(unsigned i = 0; i < iternum; i++) {
                             currIterator++;
                         }
                     }
-                } else {
-                    rse = lstack.pop_back();
-                    currBody = rse.stmt;
-                    iternum = rse.iternum;
-                    currIterator = currBody->child_begin();
-                    for(unsigned i = 0; i < iternum; i++) {
-                        currIterator++;
-                    }
                 }
-            }
-            topBody = crits[i]->funcwunlock->getBody();
-            currBody = topBody;
-            topIterator = topBody->child_begin();
-            currIterator = topIterator;
-            while(lstack.empty() == false || topIterator != topBody->child_end()) {
-                if(currIterator == currBody->child_end()) {
-                    if(*currIterator == crits[i]->unlockstmt) {
-                        break;
-                    } else {
-                        if((*currIterator)->child_begin() != NULL) {
-                            rse.stmt = currBody;
-                            rse.iternum = iternum;
-                            ulstack.push_back(rse);
-                            currBody = (*currIterator);
-                            iternum = 0;
-                            currIterator = currBody->child_begin();
+                topBody = crits[i]->funcwunlock->getBody();
+                currBody = topBody;
+                topIterator = topBody->child_begin();
+                currIterator = topIterator;
+                while(lstack.empty() == false || topIterator != topBody->child_end()) {
+                    if(currIterator == currBody->child_end()) {
+                        if(*currIterator == crits[i]->unlockstmt) {
+                            break;
                         } else {
-                            iternum++;
+                            if((*currIterator)->child_begin() != NULL) {
+                                rse.stmt = currBody;
+                                rse.iternum = iternum;
+                                ulstack.push_back(rse);
+                                currBody = (*currIterator);
+                                iternum = 0;
+                                currIterator = currBody->child_begin();
+                            } else {
+                                iternum++;
+                                currIterator++;
+                            }
+                        }
+                    } else {
+                        rse = ulstack.pop_back();
+                        currBody = rse.stmt;
+                        iternum = rse.iternum;
+                        currIterator = currBody->child_begin();
+                        for(unsigned i = 0; i < iternum; i++) {
                             currIterator++;
                         }
                     }
-                } else {
-                    rse = ulstack.pop_back();
-                    currBody = rse.stmt;
-                    iternum = rse.iternum;
-                    currIterator = currBody->child_begin();
-                    for(unsigned i = 0; i < iternum; i++) {
-                        currIterator++;
-                    }
                 }
+                // Same function case
+            } else {
+                // Different function case
             }
             if(varcount > 0 || addEmptyStructs == true) {
                 crits[i]->noMsgStruct = false;
