@@ -355,15 +355,17 @@ public:
         }
     }
 
-    void TransformFunctions(bool useEmptyStructs) {
+    void TransformFunctions() {
         std::cout << "Transforming functions..." << std::endl;
         for(unsigned i = 0; i < crits.size(); i++) {
             std::stringstream nodetext;
             std::stringstream functext;
-            nodetext << "    struct critSec" << i << "_msg cs" << i << "msg;\n";
-            for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
-                if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
-                    nodetext << "    cs" << i << "msg." << crits[i]->accessedvars[v]->namestr << " = " << crits[i]->accessedvars[v]->namestr << ";\n\n";
+            if(crits[i]->noMsgStruct == false) {
+                nodetext << "    struct critSec" << i << "_msg cs" << i << "msg;\n";
+                for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
+                    if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
+                        nodetext << "    cs" << i << "msg." << crits[i]->accessedvars[v]->namestr << " = " << crits[i]->accessedvars[v]->namestr << ";\n\n";
+                    }
                 }
             }
             functext << "void critSec" << i << "(unsigned int sz, void* msgP) {\n";
@@ -385,7 +387,6 @@ public:
             Stmt* currBody = topBody;
             Stmt::child_iterator topIterator = topBody->child_begin();
             Stmt::child_iterator currIterator = topIterator;
-            nodetext << "    ";
             if(crits[i]->needsWait == true) {
                 nodetext << "LL_delegate_wait(";
             } else {
@@ -399,6 +400,7 @@ public:
                     }
                 }
             }
+            nodetext << "    ";
             bool first = true;
             if(crits[i]->depth == 0) {
                 // Flat case
@@ -447,10 +449,10 @@ public:
                     StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
                     std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
                     if(first == false) {
-                        Replacement rep = createAdjustedReplacementForSR(sr, TheContext, maprepv, "", true, 0);
+                        Replacement rep = createAdjustedReplacementForSR(sr, TheContext, maprepv, "", false, 0);
                         maprepv.push_back(rep);
                     } else {
-                        Replacement rep = createAdjustedReplacementForSR(sr, TheContext, maprepv, nodetext.str(), true, 0);
+                        Replacement rep = createAdjustedReplacementForSR(sr, TheContext, maprepv, nodetext.str(), false, 0);
                         maprepv.push_back(rep);
                         first = false;
                     }
@@ -458,6 +460,7 @@ public:
                     topIterator++;
                     iternum++;
                 }
+                functext << "}\n\n";
             } else if(crits[i]->funcwlock == crits[i]->funcwunlock) {
                 while(lstack.empty() == false || topIterator != topBody->child_end()) {
                     if(currIterator == currBody->child_end()) {
@@ -523,6 +526,12 @@ public:
             } else {
                 // Different function case
             }
+            SourceManager& sm = TheContext->getSourceManager();
+            StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+            std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+            Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, functext.str(), true, 0);
+            maprepv.push_back(rep);
+            (*RepMap)[filename.str()] = maprepv;
         }
     }
 };
@@ -544,6 +553,7 @@ public:
         std::cout << "Done scanning.\n" << std::endl;
         ModifyingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
         ModifyingVisitor.AddStructs(false);
+        ModifyingVisitor.TransformFunctions();
         printCrits();
     }
 
