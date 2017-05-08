@@ -360,11 +360,17 @@ public:
         for(unsigned i = 0; i < crits.size(); i++) {
             std::stringstream nodetext;
             std::stringstream functext;
+            Replacement deleterep;
+            Replacement firstrep;
+            std::string structname;
             if(crits[i]->noMsgStruct == false) {
-                nodetext << "    struct critSec" << i << "_msg cs" << i << "msg;\n";
+                std::stringstream sns;
+                sns << "cs" << i << "msg";
+                structname = sns.str();
+                nodetext << "struct critSec" << i << "_msg " << structname << ";\n";
                 for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
                     if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
-                        nodetext << "    cs" << i << "msg." << crits[i]->accessedvars[v]->namestr << " = " << crits[i]->accessedvars[v]->namestr << ";\n\n";
+                        nodetext << "    " << structname << "." << crits[i]->accessedvars[v]->namestr << " = " << crits[i]->accessedvars[v]->namestr << ";\n\n";
                     }
                 }
             }
@@ -373,7 +379,7 @@ public:
                 functext << "    critSec" << i << "_msg* cs" << i << "msg = (critSec" << i << "_msg*)msgP;\n";
                 for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
                     if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
-                        functext << "    " << crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << " = " << "cs" << i << "msg->" << crits[i]->accessedvars[v]->namestr << ";\n";
+                        functext << "    " << crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << " = " << structname << "->" << crits[i]->accessedvars[v]->namestr << ";\n";
                     }
                 }
             }
@@ -385,30 +391,40 @@ public:
             rse.iternum = 0;
             Stmt* topBody = crits[i]->funcwlock->getBody();
             Stmt* currBody = topBody;
+            Stmt* stmtafterlock;
             Stmt::child_iterator topIterator = topBody->child_begin();
             Stmt::child_iterator currIterator = topIterator;
+            if(crits[i]->noMsgStruct == false) {
+                nodetext << "    ";
+            }
             if(crits[i]->needsWait == true) {
                 nodetext << "LL_delegate_wait(";
             } else {
                 nodetext << "LL_delegate(";
             }
-            nodetext << crits[i]->lockname << ", critSec" << i << ", sizeof(cs" << i << "msg), cs" << i << "msg);\n";
+            nodetext << crits[i]->lockname << ", critSec" << i;
             if(crits[i]->noMsgStruct == false) {
+                nodetext << ", sizeof(" << structname << "), " << structname << ");\n";
                 for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
                     if(crits[i]->accessedvars[v]->locality == ELSELOCAL && crits[i]->accessedvars[v]->needsReturn == true) {
                         nodetext << "    " << crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << " = " << "cs" << i << "msg->" << crits[i]->accessedvars[v]->namestr << ";\n";
                     }
                 }
+            } else {
+                nodetext << ", 0, NULL);\n";
             }
             nodetext << "    ";
             bool first = true;
             if(crits[i]->depth == 0) {
+                unsigned bodystartpos;
+                unsigned bodyendpos;
                 // Flat case
                 while(*topIterator != crits[i]->lockstmt) {
                     topIterator++;
                     iternum++;
                 }
                 topIterator++;
+                stmtafterlock = *topIterator;
                 while(*topIterator != crits[i]->unlockstmt) {
                     bool isUnlock = false;
                     if(isa<CallExpr>(*topIterator)) {
@@ -436,31 +452,52 @@ public:
                             }
                         }
                     }
+                    std::string nodestring;
+                    PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                    PrintingPolicy& ppr = pp;
+                    llvm::raw_string_ostream os(nodestring);
+                    (*topIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
                     if(isUnlock == false) {
-                        PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
-                        PrintingPolicy& ppr = pp;
-                        std::string nodestring;
-                        llvm::raw_string_ostream os(nodestring);
-                        (*topIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
                         functext << "    " << os.str() << ";\n";
-                    } 
-                    SourceRange sr = (*topIterator)->getSourceRange();
+                    }
+                    SourceRange locksr = crits[i]->lockstmt->getSourceRange();
                     SourceManager& sm = TheContext->getSourceManager();
                     StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
                     std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
                     if(first == false) {
-                        Replacement rep = createAdjustedReplacementForSR(sr, TheContext, maprepv, "", false, 0);
+                        /*Replacement rep = createAdjustedReplacementForSR(sr, TheContext, maprepv, "", false, nodestring.length()+2);
                         maprepv.push_back(rep);
+                        FullSourceLoc fslend = FullSourceLoc((*topIterator)->getSourceRange().getEnd(), sm);
+                        bodyendpos = std::get<1>(fslend.getDecomposedLoc());
+                        std::cout << "bodyendpos: " << bodyendpos << std::endl;*/
                     } else {
-                        Replacement rep = createAdjustedReplacementForSR(sr, TheContext, maprepv, nodetext.str(), false, 0);
-                        maprepv.push_back(rep);
+                        nodestring = "";
+                        crits[i]->lockstmt->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                        firstrep = createAdjustedReplacementForSR(locksr, TheContext, maprepv, nodetext.str(), false, os.str().length()+2);
+                        /*FullSourceLoc fslstart = FullSourceLoc((*topIterator)->getSourceRange().getBegin(), sm);
+                        bodystartpos = std::get<1>(fslstart.getDecomposedLoc());
+                        maprepv.push_back(rep);*/
                         first = false;
                     }
                     (*RepMap)[filename.str()] = maprepv;
                     topIterator++;
                     iternum++;
                 }
+                SourceManager& sm = TheContext->getSourceManager();
+                FullSourceLoc fslstart = FullSourceLoc(stmtafterlock->getLocStart(), sm);
+                FullSourceLoc fslend = FullSourceLoc(crits[i]->unlockstmt->getLocEnd(), sm);
+                bodystartpos = std::get<1>(fslstart.getDecomposedLoc());
+                bodyendpos = std::get<1>(fslend.getDecomposedLoc());
+                StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                deleterep = Replacement(filename, bodystartpos, bodyendpos-bodystartpos+2, StringRef(""));
+                std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                
                 functext << "}\n\n";
+                Replacement funcrep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, functext.str(), true, 0);
+                maprepv.push_back(funcrep);
+                maprepv.push_back(deleterep);
+                maprepv.push_back(firstrep);
+                (*RepMap)[filename.str()] = maprepv;
             } else if(crits[i]->funcwlock == crits[i]->funcwunlock) {
                 while(lstack.empty() == false || topIterator != topBody->child_end()) {
                     if(currIterator == currBody->child_end()) {
@@ -529,10 +566,96 @@ public:
             SourceManager& sm = TheContext->getSourceManager();
             StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
             std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
-            Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, functext.str(), true, 0);
-            maprepv.push_back(rep);
+            //Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, functext.str(), true, 0);
+            //maprepv.push_back(rep);
             (*RepMap)[filename.str()] = maprepv;
         }
+    }
+};
+
+class FinalizingASTVisitor : public RecursiveASTVisitor<FinalizingASTVisitor> {
+private:
+    ASTContext *TheContext;
+public:
+    FinalizingASTVisitor(ASTContext *C) : TheContext(C) {}
+
+    bool VisitExpr(Expr *e) {
+        if(isa<CallExpr>(e)) {
+            CallExpr* MyCallExpr = cast<CallExpr>(e);
+            FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
+            if(MyFunDecl != 0) {
+                std::string name = MyFunDecl->getNameInfo().getName().getAsString();
+                if(name == "pthread_mutex_init" || name == "pthread_mutex_destroy") {
+                    std::string nodestring;
+                    llvm::raw_string_ostream os(nodestring);
+                    PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                    PrintingPolicy& ppr = pp;
+                    MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                    std::string lname = os.str();
+                    bool isQD = false;
+                    for(unsigned c = 0; c < crits.size(); c++) {
+                        if(lname.compare(crits[c]->lockname) == 0) {
+                            isQD = true;
+                            break;
+                        }
+                    }
+                    if(isQD == true) {
+                        std::stringstream newnode;
+                        unsigned length;
+                        if(name == "pthread_mutex_init") {
+                            newnode << "LL_initialize(" << lname << ");\n";
+                            length = 27+lname.length();
+                        } else {
+                            newnode << "LL_destroy(" << lname << ");\n";
+                            length = 25+lname.length();
+                        }
+                        //e->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                        SourceManager& sm = TheContext->getSourceManager();
+                        StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                        std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                        Replacement rep = createAdjustedReplacementForSR(e->getSourceRange(), TheContext, maprepv, newnode.str(), true, length);
+                        maprepv.push_back(rep);
+                        (*RepMap)[filename.str()] = maprepv;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    bool VisitDecl(Decl *d) {
+        if(isa<VarDecl>(d) || isa<FieldDecl>(d)) {
+            std::string typestr;
+            if(isa<VarDecl>(d)) {
+                VarDecl* vd = cast<VarDecl>(d);
+                typestr = vd->getType().getAsString();
+            } else {
+                FieldDecl* fd = cast<FieldDecl>(d);
+                typestr = fd->getType().getAsString();
+            }
+            if(typestr.compare("pthread_mutex_t") == 0) {
+                bool isQD = false;
+                NamedDecl* nd = cast<NamedDecl>(d);
+                std::string declname = nd->getName().str();
+                for(unsigned c = 0; c < crits.size(); c++) {
+                    if(crits[c]->lockname.find(declname, 0) != std::string::npos && declname != "") {
+                        isQD = true;
+                        break;
+                    }
+                }
+                if(isQD == true) {
+                    std::stringstream newnode;
+                    newnode << "QDLock " << declname << ";\n";
+                    SourceManager& sm = TheContext->getSourceManager();
+                    StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                    std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                    Replacement rep = createAdjustedReplacementForSR(d->getSourceRange(), TheContext, maprepv, newnode.str(), true, declname.length()+18);
+                    maprepv.push_back(rep);
+                    (*RepMap)[filename.str()] = maprepv;
+                }
+            }
+        }
+        return true;
     }
 };
 
@@ -540,7 +663,7 @@ public:
 // by the Clang parser.
 class MyASTConsumer : public ASTConsumer {
 public:
-    MyASTConsumer(ASTContext *C) : FindingVisitor(C), ScanningVisitor(C), ModifyingVisitor(C) {}
+    MyASTConsumer(ASTContext *C) : FindingVisitor(C), ScanningVisitor(C), ModifyingVisitor(C), FinalizingVisitor(C) {}
 
   // Override the method that gets called for each parsed top-level
   // declaration.
@@ -554,6 +677,7 @@ public:
         ModifyingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
         ModifyingVisitor.AddStructs(false);
         ModifyingVisitor.TransformFunctions();
+        FinalizingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
         printCrits();
     }
 
@@ -561,6 +685,7 @@ private:
     FindingASTVisitor FindingVisitor;
     ScanningASTVisitor ScanningVisitor;
     ModifyingASTVisitor ModifyingVisitor;
+    FinalizingASTVisitor FinalizingVisitor;
 };
 
 using namespace llvm;
