@@ -604,7 +604,7 @@ public:
                         unsigned length;
                         if(name == "pthread_mutex_init") {
                             newnode << "LL_initialize(" << lname << ");\n";
-                            length = 27+lname.length();
+                            length = 28+lname.length();
                         } else {
                             newnode << "LL_destroy(" << lname << ");\n";
                             length = 25+lname.length();
