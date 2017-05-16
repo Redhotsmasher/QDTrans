@@ -5,6 +5,8 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <cstdlib>
+#include <system_error>
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -34,7 +36,7 @@
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 
-#include "clang/AST/ODRHash.h"
+#include "llvm/Support/FileSystem.h"
 
 typedef int* intptr;
 
@@ -869,6 +871,16 @@ int main(int argc, const char **argv) {
     llvm::outs() << "[BUFSTART]\n";
     myFileBuffer->write(llvm::outs());
     llvm::outs() << "[BUFEND]\n";
+    std::string filename2 = filename.substr(0,filename.rfind('.')) + ".noqd.bak";
+    std::string cmdcppstr;
+    std::stringstream cmd(cmdcppstr);
+    cmd << "cp " << filename << " " << filename2;
+    system(cmd.str().c_str());
+    llvm::outs() << "Saving to " << filename << " (original code backed up to "<< filename2 << ")...\n";
+    std::error_code error;
+    llvm::sys::fs::OpenFlags of;
+    raw_fd_ostream rfod(StringRef(filename), error, of);
+    myFileBuffer->write(rfod);
     myFiles.PrintStats();
     deleteCrits();
     return result;
