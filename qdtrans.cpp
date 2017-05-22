@@ -501,31 +501,33 @@ public:
                 maprepv.push_back(firstrep);
                 (*RepMap)[filename.str()] = maprepv;
             } else if(crits[i]->funcwlock == crits[i]->funcwunlock) {
-                while(lstack.empty() == false || topIterator != topBody->child_end()) {
-                    if(currIterator == currBody->child_end()) {
-                        if(*currIterator == crits[i]->lockstmt) {
-                            break;
-                        } else {
-                            if((*(*currIterator)->child_begin()) != NULL) {
-                                rse.stmt = currBody;
-                                rse.iternum = iternum;
-                                lstack.push_back(rse);
-                                currBody = (*currIterator);
-                                iternum = 0;
-                                currIterator = currBody->child_begin();
+                if(lockdepth < 0) {
+                    while(lstack.empty() == false || topIterator != topBody->child_end()) {
+                        if(currIterator == currBody->child_end()) {
+                            if(*currIterator == crits[i]->lockstmt) {
+                                break;
                             } else {
-                                currIterator++;
-                                iternum++;
+                                if((*(*currIterator)->child_begin()) != NULL) {
+                                    rse.stmt = currBody;
+                                    rse.iternum = iternum;
+                                    lstack.push_back(rse);
+                                    currBody = (*currIterator);
+                                    iternum = 0;
+                                    currIterator = currBody->child_begin();
+                                } else {
+                                    currIterator++;
+                                    iternum++;
+                                }
                             }
-                        }
-                    } else {
-                        rse = lstack[lstack.size()-1];
-                        lstack.pop_back();
-                        currBody = rse.stmt;
-                        iternum = rse.iternum;
-                        currIterator = currBody->child_begin();
-                        for(unsigned i = 0; i < iternum; i++) {
-                            currIterator++;
+                        } else {
+                            rse = lstack[lstack.size()-1];
+                            lstack.pop_back();
+                            currBody = rse.stmt;
+                            iternum = rse.iternum;
+                            currIterator = currBody->child_begin();
+                            for(unsigned j = 0; j < iternum; j++) {
+                                currIterator++;
+                            }
                         }
                     }
                 }
@@ -533,7 +535,7 @@ public:
                 currBody = topBody;
                 topIterator = topBody->child_begin();
                 currIterator = topIterator;
-                while(lstack.empty() == false || topIterator != topBody->child_end()) {
+                while(ulstack.empty() == false || topIterator != topBody->child_end()) {
                     if(currIterator == currBody->child_end()) {
                         if(*currIterator == crits[i]->unlockstmt) {
                             break;
@@ -556,8 +558,74 @@ public:
                         currBody = rse.stmt;
                         iternum = rse.iternum;
                         currIterator = currBody->child_begin();
-                        for(unsigned i = 0; i < iternum; i++) {
+                        for(unsigned j = 0; j < iternum; j++) {
                             currIterator++;
+                        }
+                    }
+                }
+                if(lockdepth < 0) {
+                    stmt* currTarget;
+                    for(unsigned j = 0; j < ulstack.size(); j++) {
+                        if(j != ulstack.size()-1) {
+                            currTarget = ulstack[j];
+                        } else {
+                            currTarget = crits[i]->lockstmt;
+                        }
+                        while(*currIterator != currTarget) {
+                            bool isUnlock = false;
+                            if(isa<CallExpr>(*topIterator)) {
+                                CallExpr* MyCallExpr = cast<CallExpr>(*topIterator);
+                                std::string name = MyCallExpr->getDirectCallee()->getNameInfo().getName().getAsString();
+                                if(name == "pthread_mutex_unlock") {
+                                    PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                                    PrintingPolicy& ppr = pp;
+                                    std::string nodestring;
+                                    llvm::raw_string_ostream os(nodestring);
+                                    MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                                    std::string lname = os.str();
+                                    if(lname.compare(crits[i]->lockname) == 0) {
+                                        isUnlock = true;
+                                    } else {
+                                        for(unsigned j = 0; j < crits.size(); j++) {
+                                            for(unsigned v = 0; v < crits[j]->accessedvars.size(); v++) {
+                                                if(crits[j]->accessedvars[v]->typestr.compare("pthread_mutex_t") == 0) {
+                                                    if(lname.compare(crits[j]->accessedvars[v]->namestr) == 0) {
+                                                        isUnlock = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            std::string nodestring;
+                            PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                            PrintingPolicy& ppr = pp;
+                            llvm::raw_string_ostream os(nodestring);
+                            (*topIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                            if(isUnlock == false) {
+                                functext << "    " << os.str() << ";\n";
+                            }
+                            SourceRange locksr = crits[i]->lockstmt->getSourceRange();
+                            SourceManager& sm = TheContext->getSourceManager();
+                            StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                            std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                            if(first == false) {
+                                /*Replacement rep = createAdjustedReplacementForSR(sr, TheContext, maprepv, "", false, nodestring.length()+2);
+                                  maprepv.push_back(rep);
+                                  FullSourceLoc fslend = FullSourceLoc((*topIterator)->getSourceRange().getEnd(), sm);
+                                  bodyendpos = std::get<1>(fslend.getDecomposedLoc());
+                                  std::cout << "bodyendpos: " << bodyendpos << std::endl;*/
+                            } else {
+                                nodestring = "";
+                                crits[i]->lockstmt->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                                firstrep = createAdjustedReplacementForSR(locksr, TheContext, maprepv, nodetext.str(), false, os.str().length()+2);
+                                /*FullSourceLoc fslstart = FullSourceLoc((*topIterator)->getSourceRange().getBegin(), sm);
+                                  bodystartpos = std::get<1>(fslstart.getDecomposedLoc());
+                                  maprepv.push_back(rep);*/
+                                first = false;
+                            }
+                            (*RepMap)[filename.str()] = maprepv;
                         }
                     }
                 }
