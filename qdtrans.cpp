@@ -501,7 +501,7 @@ public:
                 maprepv.push_back(firstrep);
                 (*RepMap)[filename.str()] = maprepv;
             } else if(crits[i]->funcwlock == crits[i]->funcwunlock) {
-                if(lockdepth < 0) {
+                if(crits[i]->lockdepth < 0) {
                     while(lstack.empty() == false || topIterator != topBody->child_end()) {
                         if(currIterator == currBody->child_end()) {
                             if(*currIterator == crits[i]->lockstmt) {
@@ -563,18 +563,22 @@ public:
                         }
                     }
                 }
-                if(lockdepth < 0) {
-                    stmt* currTarget;
+                if(crits[i]->lockdepth < 0) {
+                    std::vector<Replacement> deleterepvec;
+                    SourceRange startsr;
+                    SourceRange endsr;
+                    bool second == true;
+                    Stmt* currTarget;
                     for(unsigned j = 0; j < ulstack.size(); j++) {
                         if(j != ulstack.size()-1) {
-                            currTarget = ulstack[j];
+                            currTarget = ulstack[j].stmt;
                         } else {
                             currTarget = crits[i]->lockstmt;
                         }
                         while(*currIterator != currTarget) {
                             bool isUnlock = false;
-                            if(isa<CallExpr>(*topIterator)) {
-                                CallExpr* MyCallExpr = cast<CallExpr>(*topIterator);
+                            if(isa<CallExpr>(*currIterator)) {
+                                CallExpr* MyCallExpr = cast<CallExpr>(*currIterator);
                                 std::string name = MyCallExpr->getDirectCallee()->getNameInfo().getName().getAsString();
                                 if(name == "pthread_mutex_unlock") {
                                     PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
@@ -602,7 +606,7 @@ public:
                             PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                             PrintingPolicy& ppr = pp;
                             llvm::raw_string_ostream os(nodestring);
-                            (*topIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                            (*currIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
                             if(isUnlock == false) {
                                 functext << "    " << os.str() << ";\n";
                             }
@@ -611,11 +615,12 @@ public:
                             StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
                             std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
                             if(first == false) {
-                                /*Replacement rep = createAdjustedReplacementForSR(sr, TheContext, maprepv, "", false, nodestring.length()+2);
-                                  maprepv.push_back(rep);
-                                  FullSourceLoc fslend = FullSourceLoc((*topIterator)->getSourceRange().getEnd(), sm);
-                                  bodyendpos = std::get<1>(fslend.getDecomposedLoc());
-                                  std::cout << "bodyendpos: " << bodyendpos << std::endl;*/
+                                if(second == true) {
+                                    startsr = (*CurrIterator)->getSourceRange();
+                                    second = false;
+                                }
+                                endsr = (*CurrIterator)->getSourceRange();
+                                
                             } else {
                                 nodestring = "";
                                 crits[i]->lockstmt->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
@@ -625,8 +630,13 @@ public:
                                   maprepv.push_back(rep);*/
                                 first = false;
                             }
-                            (*RepMap)[filename.str()] = maprepv;
                         }
+                        FullSourceLoc fslstart = FullSourceLoc(startsr.getBegin(), sm);
+                        bodystartpos = std::get<1>(fslstart.getDecomposedLoc());
+                        FullSourceLoc fslend = FullSourceLoc(endsr.getEnd(), sm);
+                        bodyendpos = std::get<1>(fslend.getDecomposedLoc());
+                        deleterep = Replacement(filename, bodystartpos, bodyendpos-bodystartpos+2, StringRef(""));
+                        deleterepvec.push_back(deleterep);
                     }
                 }
                 // Same function case
