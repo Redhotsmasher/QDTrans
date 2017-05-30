@@ -78,6 +78,8 @@ std::vector<struct criticalSection*> crits;
 
 Stmt* thestmt;
 
+unsigned transformed = 0;
+
 Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection, int newlength);
 
 /* Returns true if sr1 < sr2, false otherwise */
@@ -123,11 +125,12 @@ public:
                         (*newcrit)->funcwlock = fdecl;
                         (*newcrit)->lockdepth = depth-fdepth;
                         (*newcrit)->depth = depth;
+                        (*newcrit)->needsWait = false;
                         PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                         PrintingPolicy& ppr = pp;
                         MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
                         (*newcrit)->lockname = os.str();
-                        std::cout << "New lock has lockname \"" << (*newcrit)->lockname << "\"." << std::endl;
+                        //std::cout << "New lock has lockname \"" << (*newcrit)->lockname << "\"." << std::endl;
                         //std::cout << "Lockname: " << newcrit->lockname << std::endl;
                     }
                 }
@@ -144,7 +147,7 @@ public:
                         nodestring = "";
                         MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
                         std::string lname = os.str();
-                        std::cout << "Comparing \"" << lname << "\" and \"" << (*newcrit)->lockname << "\"." << std::endl;
+                        //std::cout << "Comparing \"" << lname << "\" and \"" << (*newcrit)->lockname << "\"." << std::endl;
                         if(lname.compare((*newcrit)->lockname) == 0) {
                             (*newcrit)->unlockstmt = stmt;
                             (*newcrit)->funcwunlock = fdecl;
@@ -167,14 +170,14 @@ public:
     }
     
     void checkStatements(Stmt* stmt, struct criticalSection** newcrit, bool* inCrit, bool* needspush, bool* skip, unsigned depth, llvm::raw_string_ostream& os, std::string& nodestring, std::stringstream& nodetext, std::vector<FunctionDecl*>* fstack) {
-        std::cout << "Depth: " << depth << ", type: " << stmt->getStmtClassName() << ", inCrit: " << *inCrit << " inside function '" << (*fstack)[fstack->size()-1]->getNameInfo().getAsString() << "'." << std::endl;
+        //std::cout << "Depth: " << depth << ", type: " << stmt->getStmtClassName() << ", inCrit: " << *inCrit << " inside function '" << (*fstack)[fstack->size()-1]->getNameInfo().getAsString() << "'." << std::endl;
         if(isa<CallExpr>(stmt)) {
             CallExpr* cx = cast<CallExpr>(stmt);
             FunctionDecl* fdecl = cx->getDirectCallee()->getCanonicalDecl();
-            std::cout << "About to enter function " << fdecl << " with body top stmt " << fdecl->getBody() << ", isDefined() = " << fdecl->isDefined() << " and willHaveBody() = " << fdecl->willHaveBody() << "." << std::endl;
+            //std::cout << "About to enter function " << fdecl << " with body top stmt " << fdecl->getBody() << ", isDefined() = " << fdecl->isDefined() << " and willHaveBody() = " << fdecl->willHaveBody() << "." << std::endl;
             if(fdecl != NULL && fdecl->hasBody() == true) {
                 std::string fname = fdecl->getNameInfo().getAsString();
-                std::cout << "Entering '" << fname << "'..." << std::endl;
+                //std::cout << "Entering '" << fname << "'..." << std::endl;
                 bool match = false;
                 for(unsigned i = 0; i < fstack->size(); i++) {
                     if(fname.compare((*fstack)[i]->getNameInfo().getAsString()) == 0) {
@@ -232,7 +235,7 @@ public:
                         checkStatements(funcbody, &newcrit, &inCrit, &needspush, &skip, 0, os, nodestring, nodetext, &fstack);
                         if(needspush == true) {
                             crits.push_back(newcrit);
-                            std::cout << "Pushed!" << std::endl;
+                            //std::cout << "Pushed!" << std::endl;
                             needspush = false;
                         }
                         fstack.pop_back();
@@ -271,10 +274,10 @@ public:
                     if((dup == false) && (isa<FunctionDecl>(((DeclRefExpr*)(e))->getDecl()) == false)) {
                         struct variable* newvar = new struct variable;
                         newvar->namestr = name;
-                        std::cout << "Name: " << name << std::endl;
+                        //std::cout << "Name: " << name << std::endl;
                         newvar->typestr = tstr;
                         //newvar->typestr = declname.getNamedTypeInfo()->getType().getAsString();
-                        std::cout << "Type: " << newvar->typestr << std::endl;
+                        //std::cout << "Type: " << newvar->typestr << std::endl;
 			if(strstr(tstring, "*") != NULL) {
 			    newvar->pointer = true;
 			} else {
@@ -295,6 +298,9 @@ public:
                                 newvar->locality = ELSELOCAL;
                                 newvar->needsReturn = true;
                             }
+                        }
+                        if(newvar->needsReturn == true) {
+                            c->needsWait = true;
                         }
                         c->accessedvars.push_back(newvar);
                     }
@@ -331,7 +337,7 @@ public:
     }
 
     void AddStructs(bool addEmptyStructs) {
-        std::cout << "Adding structs..." << std::endl;
+        //std::cout << "Adding structs..." << std::endl;
         for(unsigned i = 0; i < crits.size(); i++) {
             std::stringstream nodetext;
             nodetext << "struct critSec" << i << "_msg {\n";
@@ -358,7 +364,7 @@ public:
     }
 
     void TransformFunctions() {
-        std::cout << "Transforming functions..." << std::endl;
+        //std::cout << "Transforming functions..." << std::endl;
         for(unsigned i = 0; i < crits.size(); i++) {
             std::stringstream nodetext;
             std::stringstream functext;
@@ -418,6 +424,7 @@ public:
             nodetext << "    ";
             bool first = true;
             if(crits[i]->depth == 0) {
+                transformed++;
                 unsigned bodystartpos;
                 unsigned bodyendpos;
                 // Flat case
@@ -567,7 +574,9 @@ public:
                     std::vector<Replacement> deleterepvec;
                     SourceRange startsr;
                     SourceRange endsr;
-                    bool second == true;
+                    unsigned bodystartpos;
+                    unsigned bodyendpos;
+                    bool second = true;
                     Stmt* currTarget;
                     for(unsigned j = 0; j < ulstack.size(); j++) {
                         if(j != ulstack.size()-1) {
@@ -616,11 +625,10 @@ public:
                             std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
                             if(first == false) {
                                 if(second == true) {
-                                    startsr = (*CurrIterator)->getSourceRange();
+                                    startsr = (*currIterator)->getSourceRange();
                                     second = false;
                                 }
-                                endsr = (*CurrIterator)->getSourceRange();
-                                
+                                endsr = (*currIterator)->getSourceRange();
                             } else {
                                 nodestring = "";
                                 crits[i]->lockstmt->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
@@ -630,7 +638,10 @@ public:
                                   maprepv.push_back(rep);*/
                                 first = false;
                             }
+                            currIterator++;
                         }
+                        SourceManager& sm = TheContext->getSourceManager();
+                        StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
                         FullSourceLoc fslstart = FullSourceLoc(startsr.getBegin(), sm);
                         bodystartpos = std::get<1>(fslstart.getDecomposedLoc());
                         FullSourceLoc fslend = FullSourceLoc(endsr.getEnd(), sm);
@@ -751,14 +762,14 @@ public:
         // Traversing the translation unit decl via a RecursiveASTVisitor
         // will visit all nodes in the AST.
         FindingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
-        std::cout << "Done finding.\n" << std::endl;
+        //std::cout << "Done finding.\n" << std::endl;
         ScanningVisitor.TraverseDecl(Context.getTranslationUnitDecl());
-        std::cout << "Done scanning.\n" << std::endl;
+        //std::cout << "Done scanning.\n" << std::endl;
         ModifyingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
         ModifyingVisitor.AddStructs(false);
         ModifyingVisitor.TransformFunctions();
         FinalizingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
-        printCrits();
+        //printCrits();
     }
 
 private:
@@ -815,12 +826,12 @@ Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContex
     unsigned adjstart = start;
     for(auto r : repv) {
         if(r.getOffset() <= adjstart) {
-            printf("adjstart = %u+%lu-%u\n", adjstart, r.getReplacementText().size(), r.getLength());
+            //printf("adjstart = %u+%lu-%u\n", adjstart, r.getReplacementText().size(), r.getLength());
             adjstart = adjstart+r.getReplacementText().size()-r.getLength();
         }
     }
-    std::cout << "Start: " << start << ", End: " << start+length << std::endl;
-    std::cout << "AdjStart: " << adjstart << ", AdjEnd: " << adjstart+length << std::endl;
+    //std::cout << "Start: " << start << ", End: " << start+length << std::endl;
+    //std::cout << "AdjStart: " << adjstart << ", AdjEnd: " << adjstart+length << std::endl;
     Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), start, length, StringRef(text));
     return newReplacement;
 }
@@ -894,12 +905,12 @@ int main(int argc, const char **argv) {
     // create a new Clang Tool instance (a LibTooling environment)
     RefactoringTool Tool(op.getCompilations(), op.getSourcePathList());
     const std::vector<std::string>& splistvec = op.getSourcePathList();
-    std::cout << "[SPLISTSTART]" << std::endl;
+    /*std::cout << "[SPLISTSTART]" << std::endl;
     for(auto s : splistvec) {
         std::cout << s << std::endl;
-    }
+        }*/
     std::string filename = splistvec[0];
-    std::cout << "[SPLISTEND]" << std::endl;
+    //std::cout << "[SPLISTEND]" << std::endl;
     std::vector<std::string> args(argc-2);
     for(int i = 0; i < argc-2; i++) {
         args[i] = argv[i+2];
@@ -909,7 +920,7 @@ int main(int argc, const char **argv) {
     buffer << t.rdbuf();
     std::map<std::string, std::vector<Replacement>> rmap;
     RepMap = &rmap;
-    std::cout << RepMap << std::endl;
+    //std::cout << RepMap << std::endl;
     std::vector<struct criticalSection*> criticalSections;
     crits = criticalSections;
     int result = Tool.run(newFrontendActionFactory<MyASTClassAction>().get());
@@ -923,16 +934,16 @@ int main(int argc, const char **argv) {
     clang::CompilerInstance CI;
     CI.createDiagnostics();
     SourceManager sm(CI.getDiagnostics(), myFiles, false);
-    std::cout << "FILENAME: " << "\"" << filename << "\"" << std::endl;
+    //std::cout << "FILENAME: " << "\"" << filename << "\"" << std::endl;
     const FileEntry *myFileEntry = myFiles.getFile(filename);
     
     LangOptions lopts;
     Rewriter Rw = Rewriter(sm, lopts);
     //sm.overrideFileContents(myFileEntry, myFileBuffer.get().get(), false);
     std::vector<Replacement> mainrepv = (*RepMap)[filename];
-    llvm::outs() << "[REPSSTART]\n";
+    //llvm::outs() << "[REPSSTART]\n";
     for(auto r : mainrepv) {
-        std::cout << r.toString() << std::endl;
+        //std::cout << r.toString() << std::endl;
         r.apply(Rw);
         /*auto myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
         llvm::outs() << "[BUFSTART:" << myFileBuffer->size() << "]\n";
@@ -940,26 +951,27 @@ int main(int argc, const char **argv) {
         myFileBuffer->write(llvm::outs());*/
         //llvm::outs() << "[BUFEND]\n";
     }
-    llvm::outs() << "[REPSEND]\n";
+    //llvm::outs() << "[REPSEND]\n";
     /*auto myFileBuffer = myFiles.getBufferForFile(filename);
     if(!myFileBuffer) {
         std::cerr << "Nope" << std::endl;
         }*/
     auto myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
-    llvm::outs() << "[BUFSTART]\n";
-    myFileBuffer->write(llvm::outs());
-    llvm::outs() << "[BUFEND]\n";
+    //llvm::outs() << "[BUFSTART]\n";
+    //myFileBuffer->write(llvm::outs());
+    //llvm::outs() << "[BUFEND]\n";
     std::string filename2 = filename.substr(0,filename.rfind('.')) + ".noqd.bak";
     std::string cmdcppstr;
     std::stringstream cmd(cmdcppstr);
     cmd << "cp " << filename << " " << filename2;
     system(cmd.str().c_str());
-    llvm::outs() << "Saving to " << filename << " (original code backed up to "<< filename2 << ")...\n";
+    //llvm::outs() << "Saving to " << filename << " (original code backed up to "<< filename2 << ")...\n";
+    std::cout << "Successfully transformed: " << transformed << std::endl;
     std::error_code error;
     llvm::sys::fs::OpenFlags of;
     raw_fd_ostream rfod(StringRef(filename), error, of);
     myFileBuffer->write(rfod);
-    myFiles.PrintStats();
+    //myFiles.PrintStats();
     deleteCrits();
     return result;
 }
