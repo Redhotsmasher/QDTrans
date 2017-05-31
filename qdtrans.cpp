@@ -56,7 +56,7 @@ struct criticalSection {
     bool needsWait;
     bool noMsgStruct;
     std::string lockname;
-    std::vector<struct variable*> accessedvars;
+    std::vector<struct variable*>* accessedvars;
     signed lockdepth;
     signed depth;
     clang::Stmt* lockstmt;
@@ -119,7 +119,7 @@ public:
                         nodetext.str("");
                         nodestring = "";
                         (*newcrit) = new criticalSection;
-                        (*newcrit)->accessedvars = *(new std::vector<struct variable*>);
+                        (*newcrit)->accessedvars = (new std::vector<struct variable*>);
                         (*newcrit)->lockstmt = stmt;
                         (*newcrit)->unlockstmt = NULL;
                         (*newcrit)->funcwlock = fdecl;
@@ -264,7 +264,7 @@ public:
                     DeclarationNameInfo declname = ((DeclRefExpr*)(e))->getNameInfo();
                     std::string name = declname.getName().getAsString();
                     bool dup = false;
-                    for(auto v : c->accessedvars) {
+                    for(auto v : *(c->accessedvars)) {
                         if(v->namestr.compare(name) == 0) {
                             dup = true;
                         }
@@ -302,7 +302,7 @@ public:
                         if(newvar->needsReturn == true) {
                             c->needsWait = true;
                         }
-                        c->accessedvars.push_back(newvar);
+                        c->accessedvars->push_back(newvar);
                     }
                 }
             }
@@ -342,9 +342,9 @@ public:
             std::stringstream nodetext;
             nodetext << "struct critSec" << i << "_msg {\n";
             unsigned varcount = 0;
-            for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
-                if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
-                    nodetext << "    " << crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << ";\n";
+            for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
+                if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL) {
+                    nodetext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                 }
                 varcount++;
             }
@@ -376,18 +376,18 @@ public:
                 sns << "cs" << i << "msg";
                 structname = sns.str();
                 nodetext << "struct critSec" << i << "_msg " << structname << ";\n";
-                for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
-                    if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
-                        nodetext << "    " << structname << "." << crits[i]->accessedvars[v]->namestr << " = " << crits[i]->accessedvars[v]->namestr << ";\n\n";
+                for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
+                    if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL) {
+                        nodetext << "    " << structname << "." << (*(crits[i]->accessedvars))[v]->namestr << " = " << (*(crits[i]->accessedvars))[v]->namestr << ";\n\n";
                     }
                 }
             }
             functext << "void critSec" << i << "(unsigned int sz, void* msgP) {\n";
             if(crits[i]->noMsgStruct == false) {
                 functext << "    critSec" << i << "_msg* cs" << i << "msg = (critSec" << i << "_msg*)msgP;\n";
-                for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
-                    if(crits[i]->accessedvars[v]->locality == ELSELOCAL) {
-                        functext << "    " << crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << " = " << structname << "->" << crits[i]->accessedvars[v]->namestr << ";\n";
+                for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
+                    if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL) {
+                        functext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = " << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                     }
                 }
             }
@@ -413,9 +413,9 @@ public:
             nodetext << crits[i]->lockname << ", critSec" << i;
             if(crits[i]->noMsgStruct == false) {
                 nodetext << ", sizeof(" << structname << "), " << structname << ");\n";
-                for(unsigned v = 0; v < crits[i]->accessedvars.size(); v++) {
-                    if(crits[i]->accessedvars[v]->locality == ELSELOCAL && crits[i]->accessedvars[v]->needsReturn == true) {
-                        nodetext << "    " << crits[i]->accessedvars[v]->typestr << " " << crits[i]->accessedvars[v]->namestr << " = " << "cs" << i << "msg->" << crits[i]->accessedvars[v]->namestr << ";\n";
+                for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
+                    if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL && (*(crits[i]->accessedvars))[v]->needsReturn == true) {
+                        nodetext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = " << "cs" << i << "msg->" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                     }
                 }
             } else {
@@ -423,7 +423,9 @@ public:
             }
             nodetext << "    ";
             bool first = true;
+            std::cout << "Checking..." << std::endl;
             if(crits[i]->depth == 0) {
+                std::cout << "Checked, case 1." << std::endl;
                 transformed++;
                 unsigned bodystartpos;
                 unsigned bodyendpos;
@@ -450,9 +452,9 @@ public:
                                 isUnlock = true;
                             } else {
                                 for(unsigned j = 0; j < crits.size(); j++) {
-                                    for(unsigned v = 0; v < crits[j]->accessedvars.size(); v++) {
-                                        if(crits[j]->accessedvars[v]->typestr.compare("pthread_mutex_t") == 0) {
-                                            if(lname.compare(crits[j]->accessedvars[v]->namestr) == 0) {
+                                    for(unsigned v = 0; v < crits[j]->accessedvars->size(); v++) {
+                                        if((*(crits[j]->accessedvars))[v]->typestr.compare("pthread_mutex_t") == 0) {
+                                            if(lname.compare((*(crits[j]->accessedvars))[v]->namestr) == 0) {
                                                 isUnlock = true;
                                             }
                                         }
@@ -506,6 +508,7 @@ public:
                 maprepv.push_back(funcrep);
                 maprepv.push_back(deleterep);
                 maprepv.push_back(firstrep);
+                std::cout << "Pushed to " << filename.str() << "." << std::endl;
                 (*RepMap)[filename.str()] = maprepv;
             } else if(crits[i]->funcwlock == crits[i]->funcwunlock) {
                 if(crits[i]->lockdepth < 0) {
@@ -600,9 +603,9 @@ public:
                                         isUnlock = true;
                                     } else {
                                         for(unsigned j = 0; j < crits.size(); j++) {
-                                            for(unsigned v = 0; v < crits[j]->accessedvars.size(); v++) {
-                                                if(crits[j]->accessedvars[v]->typestr.compare("pthread_mutex_t") == 0) {
-                                                    if(lname.compare(crits[j]->accessedvars[v]->namestr) == 0) {
+                                            for(unsigned v = 0; v < crits[j]->accessedvars->size(); v++) {
+                                                if((*(crits[j]->accessedvars))[v]->typestr.compare("pthread_mutex_t") == 0) {
+                                                    if(lname.compare((*(crits[j]->accessedvars))[v]->namestr) == 0) {
                                                         isUnlock = true;
                                                     }
                                                 }
@@ -848,7 +851,7 @@ void printCrits() {
             std::cout << "Has a message struct." << std::endl;
         }
         std::cout << "Contains the following variables:" << std::endl;
-        for(auto v : c->accessedvars) {
+        for(auto v : *(c->accessedvars)) {
             std::string tloc;
             std::string ptr;
             std::string needsret;
@@ -876,10 +879,10 @@ void printCrits() {
 
 void deleteCrits() {
     for(auto c : crits) {
-        for(auto v : c->accessedvars) {
+        for(auto v : *(c->accessedvars)) {
             delete v;
         }
-        //delete c->accessedvars;
+        delete c->accessedvars;
         delete c;
     }
 }
@@ -968,8 +971,11 @@ int main(int argc, const char **argv) {
     //llvm::outs() << "Saving to " << filename << " (original code backed up to "<< filename2 << ")...\n";
     std::cout << "Successfully transformed: " << transformed << std::endl;
     std::error_code error;
-    llvm::sys::fs::OpenFlags of;
+    llvm::sys::fs::OpenFlags of = llvm::sys::fs::F_None;
     raw_fd_ostream rfod(StringRef(filename), error, of);
+    //std::cout << "Got buffer for filename " << filename << "." << std::endl;
+    //std::cout << "Could have been " << argv[1] << "." << std::endl;
+    //std::cout << error << std::endl;
     myFileBuffer->write(rfod);
     //myFiles.PrintStats();
     deleteCrits();
