@@ -508,7 +508,7 @@ public:
                 maprepv.push_back(funcrep);
                 maprepv.push_back(deleterep);
                 maprepv.push_back(firstrep);
-                std::cout << "Pushed to " << filename.str() << "." << std::endl;
+                //std::cout << "Pushed to " << filename.str() << "." << std::endl;
                 (*RepMap)[filename.str()] = maprepv;
             } else if(crits[i]->funcwlock == crits[i]->funcwunlock) {
                 if(crits[i]->lockdepth < 0) {
