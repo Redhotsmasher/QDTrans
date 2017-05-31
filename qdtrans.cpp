@@ -423,9 +423,9 @@ public:
             }
             nodetext << "    ";
             bool first = true;
-            std::cout << "Checking..." << std::endl;
+            //std::cout << "Checking..." << std::endl;
             if(crits[i]->depth == 0) {
-                std::cout << "Checked, case 1." << std::endl;
+                //std::cout << "Checked, case 1." << std::endl;
                 transformed++;
                 unsigned bodystartpos;
                 unsigned bodyendpos;
