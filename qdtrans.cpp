@@ -173,7 +173,10 @@ public:
         //std::cout << "Depth: " << depth << ", type: " << stmt->getStmtClassName() << ", inCrit: " << *inCrit << " inside function '" << (*fstack)[fstack->size()-1]->getNameInfo().getAsString() << "'." << std::endl;
         if(isa<CallExpr>(stmt)) {
             CallExpr* cx = cast<CallExpr>(stmt);
-            FunctionDecl* fdecl = cx->getDirectCallee()->getCanonicalDecl();
+            FunctionDecl* fdecl = cx->getDirectCallee();
+            if(fdecl != 0) {
+                fdecl = fdecl->getCanonicalDecl();
+            }
             //std::cout << "About to enter function " << fdecl << " with body top stmt " << fdecl->getBody() << ", isDefined() = " << fdecl->isDefined() << " and willHaveBody() = " << fdecl->willHaveBody() << "." << std::endl;
             if(fdecl != NULL && fdecl->hasBody() == true) {
                 std::string fname = fdecl->getNameInfo().getAsString();
@@ -494,6 +497,13 @@ public:
                     topIterator++;
                     iternum++;
                 }
+                if(crits[i]->noMsgStruct == false) {
+                    for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
+                        if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL && (*(crits[i]->accessedvars))[v]->needsReturn == true) {
+                            functext << "    " << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << " = " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                        }
+                    }
+                }
                 SourceManager& sm = TheContext->getSourceManager();
                 FullSourceLoc fslstart = FullSourceLoc(stmtafterlock->getLocStart(), sm);
                 FullSourceLoc fslend = FullSourceLoc(crits[i]->unlockstmt->getLocEnd(), sm);
@@ -510,7 +520,7 @@ public:
                 maprepv.push_back(firstrep);
                 //std::cout << "Pushed to " << filename.str() << "." << std::endl;
                 (*RepMap)[filename.str()] = maprepv;
-            } else if(crits[i]->funcwlock == crits[i]->funcwunlock) {
+            } else if(crits[i]->funcwlock == crits[i]->funcwunlock && false == true) { // WIP code disabled.
                 if(crits[i]->lockdepth < 0) {
                     while(lstack.empty() == false || topIterator != topBody->child_end()) {
                         if(currIterator == currBody->child_end()) {
@@ -768,6 +778,7 @@ public:
         //std::cout << "Done finding.\n" << std::endl;
         ScanningVisitor.TraverseDecl(Context.getTranslationUnitDecl());
         //std::cout << "Done scanning.\n" << std::endl;
+        printCrits();
         ModifyingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
         ModifyingVisitor.AddStructs(false);
         ModifyingVisitor.TransformFunctions();
@@ -981,3 +992,4 @@ int main(int argc, const char **argv) {
     deleteCrits();
     return result;
 }
+
