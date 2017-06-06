@@ -63,6 +63,8 @@ struct criticalSection {
     signed depth;
     clang::Stmt* lockstmt;
     clang::Stmt* unlockstmt;
+    clang::Stmt* stmtabovelock;
+    bool typeA;
     clang::FunctionDecl* funcwlock;
     clang::FunctionDecl* funcwunlock;
 };
@@ -102,16 +104,20 @@ public:
     FindingASTVisitor(ASTContext *C) : TheContext(C) {
         //LastContext = TheContext;
         std::vector<Replacement> vec;
-        (*RepMap)[TheContext->getSourceManager().getFileEntryForID(TheContext->getSourceManager().getMainFileID())->getName()] = vec; //Initializing the Replacement vector
         SourceManager& sm = TheContext->getSourceManager();
         StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-        std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
-        Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), 0, 0, "");
+        char* fullpath = realpath(filename.str().c_str(), NULL);
+        std::string filenamestr = std::string(fullpath);
+        (*RepMap)[filenamestr] = vec; //Initializing the Replacement vector
+        std::vector<Replacement> maprepv = (*RepMap)[filenamestr];
+        Replacement newReplacement = Replacement(StringRef(filenamestr), 0, 0, "");
+        std::cout << "Upper filename: " << filenamestr << std::endl;
         maprepv.push_back(newReplacement); //Adding dummy replacement to prent crash when attempting o get unmodified buffer.
-        (*RepMap)[filename.str()] = maprepv;
+        (*RepMap)[filenamestr] = maprepv;
+        delete fullpath;
     }
 
-    void checkStatement(Stmt* stmt, struct criticalSection** newcrit, bool* inCrit, bool* needspush, bool* skip, unsigned depth, llvm::raw_string_ostream& os, std::string& nodestring, std::stringstream& nodetext, FunctionDecl* fdecl, unsigned fdepth) {
+    void checkStatement(Stmt* stmt, struct criticalSection** newcrit, bool* inCrit, bool* needspush, bool* skip, unsigned depth, llvm::raw_string_ostream& os, std::string& nodestring, std::stringstream& nodetext, FunctionDecl* fdecl, unsigned fdepth, Stmt* stmt2) {
         if(*inCrit == false) {
             if(isa<CallExpr>(stmt)) {
                 CallExpr* MyCallExpr = cast<CallExpr>(stmt);
@@ -122,6 +128,7 @@ public:
                         //std::cout << "Found!" << std::endl;
                         *inCrit = true;
                         *needspush = true;
+                        std::cout << "Setting needspush (is " << *needspush << ", could be " << needspush << ")..." << std::endl;
                         nodetext.str("");
                         nodestring = "";
                         (*newcrit) = new criticalSection;
@@ -132,6 +139,8 @@ public:
                         (*newcrit)->lockdepth = depth-fdepth;
                         (*newcrit)->depth = depth;
                         (*newcrit)->needsWait = false;
+                        (*newcrit)->stmtabovelock = stmt2;
+                        (*newcrit)->typeA = true;
                         PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                         PrintingPolicy& ppr = pp;
                         MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
@@ -158,10 +167,16 @@ public:
                             (*newcrit)->unlockstmt = stmt;
                             (*newcrit)->funcwunlock = fdecl;
                             (*newcrit)->depth = depth-(*newcrit)->depth;
+                            if((*newcrit)->typeA == true) {
+                                if((*newcrit)->stmtabovelock != stmt2) {
+                                    (*newcrit)->typeA = false;
+                                }
+                            }
                         }
                     } else if(name == "pthread_mutex_lock") {
                         if((*newcrit)->unlockstmt != NULL) {
                             crits.push_back((*newcrit));
+                            std::cout << "169 pushed " << (*newcrit) << "." << std::endl;
                             critcount++;
                         } else {
                             delete (*newcrit);
@@ -169,6 +184,7 @@ public:
                         //std::cout << "Pushed!" << std::endl;
                         *inCrit = false;
                         *needspush = false;
+                        std::cout << "Setting needspush (is " << *needspush << ", could be " << needspush << ")..." << std::endl;
                         *skip = true;
                     }
                 } 
@@ -205,9 +221,8 @@ public:
         Stmt::child_iterator ChildIterator = stmt->child_begin();
         while(ChildIterator != stmt->child_end()) {
             if(*ChildIterator != NULL) {
-                checkStatement(*ChildIterator, newcrit, inCrit, needspush, skip, depth, os, nodestring, nodetext, (*fstack)[fstack->size()-1], fstack->size()-1);
+                checkStatement(*ChildIterator, newcrit, inCrit, needspush, skip, depth, os, nodestring, nodetext, (*fstack)[fstack->size()-1], fstack->size()-1, stmt);
             }
-            //std::cout << "needspush: " << needspush << std::endl;
             if(*skip == false) {
                 if(*ChildIterator != NULL) {
                     checkStatements(*ChildIterator, newcrit, inCrit, needspush, skip, depth+1, os, nodestring, nodetext, fstack);
@@ -243,11 +258,13 @@ public:
                         std::string fname = funcdecl->getNameInfo().getAsString();
                         fstack.push_back(funcdecl);
                         checkStatements(funcbody, &newcrit, &inCrit, &needspush, &skip, 0, os, nodestring, nodetext, &fstack);
+                        std::cout << "Checking needspush (is " << needspush << ")..." << std::endl;
                         if(needspush == true) {
                             crits.push_back(newcrit);
-                            //std::cout << "Pushed!" << std::endl;
+                            std::cout << "255 Pushed " << newcrit << "." << std::endl;
                             critcount++;
                             needspush = false;
+                            inCrit = false;
                         }
                         fstack.pop_back();
                     }
@@ -284,6 +301,7 @@ public:
                     const char* tstring = tstr.c_str();
                     if((dup == false) && (isa<FunctionDecl>(((DeclRefExpr*)(e))->getDecl()) == false)) {
                         struct variable* newvar = new struct variable;
+                        //std::cout << "    Allocating variable at " << newvar << "..." << std::endl;
                         newvar->namestr = name;
                         //std::cout << "Name: " << name << std::endl;
                         newvar->typestr = tstr;
@@ -361,6 +379,7 @@ public:
             }
             nodetext << "};\n\n";
             if(varcount > 0 || addEmptyStructs == true) {
+                std::cout << "Critical section " << i << " has a message struct." << std::endl;
                 crits[i]->noMsgStruct = false;
                 SourceManager& sm = TheContext->getSourceManager();
                 StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
@@ -369,6 +388,7 @@ public:
                 maprepv.push_back(rep);
                 (*RepMap)[filename.str()] = maprepv;
             } else {
+                std::cout << "Critical section " << i << " has no message struct." << std::endl;
                 crits[i]->noMsgStruct = true;
             }
         }
@@ -435,7 +455,11 @@ public:
             nodetext << "    ";
             bool first = true;
             //std::cout << "Checking..." << std::endl;
-            if(crits[i]->depth == 0) {
+            if(crits[i]->depth == 0 && crits[i]->typeA == true) {
+                topBody = crits[i]->stmtabovelock;
+                topIterator = topBody->child_begin();
+                currBody = topBody;
+                currIterator = topIterator;
                 //std::cout << "Checked, case 1." << std::endl;
                 transformed++;
                 acrits++;
@@ -446,71 +470,71 @@ public:
                     topIterator++;
                     iternum++;
                 }
-                if(topIterator == topBody->child_end()) {
-                    transformed--;
-                    critcount--;
-                    acrits--;
-                } else {
-                    topIterator++;
-                    stmtafterlock = *topIterator;
-                    while(*topIterator != crits[i]->unlockstmt) {
-                        bool isUnlock = false;
-                        if(isa<CallExpr>(*topIterator)) {
-                            CallExpr* MyCallExpr = cast<CallExpr>(*topIterator);
-                            std::string name = MyCallExpr->getDirectCallee()->getNameInfo().getName().getAsString();
-                            if(name == "pthread_mutex_unlock") {
-                                PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
-                                PrintingPolicy& ppr = pp;
-                                std::string nodestring;
-                                llvm::raw_string_ostream os(nodestring);
-                                MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                                std::string lname = os.str();
-                                if(lname.compare(crits[i]->lockname) == 0) {
-                                    isUnlock = true;
-                                } else {
-                                    for(unsigned j = 0; j < crits.size(); j++) {
-                                        for(unsigned v = 0; v < crits[j]->accessedvars->size(); v++) {
-                                            if((*(crits[j]->accessedvars))[v]->typestr.compare("pthread_mutex_t") == 0) {
-                                                if(lname.compare((*(crits[j]->accessedvars))[v]->namestr) == 0) {
-                                                    isUnlock = true;
-                                                }
+                topIterator++;
+                stmtafterlock = *topIterator;
+                while(*topIterator != crits[i]->unlockstmt) {
+                    bool isUnlock = false;
+                    if(isa<CallExpr>(*topIterator)) {
+                        CallExpr* MyCallExpr = cast<CallExpr>(*topIterator);
+                        std::string name = MyCallExpr->getDirectCallee()->getNameInfo().getName().getAsString();
+                        if(name == "pthread_mutex_unlock") {
+                            PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                            PrintingPolicy& ppr = pp;
+                            std::string nodestring;
+                            llvm::raw_string_ostream os(nodestring);
+                            MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                            std::string lname = os.str();
+                            if(lname.compare(crits[i]->lockname) == 0) {
+                                isUnlock = true;
+                            } else {
+                                for(unsigned j = 0; j < crits.size(); j++) {
+                                    for(unsigned v = 0; v < crits[j]->accessedvars->size(); v++) {
+                                        if((*(crits[j]->accessedvars))[v]->typestr.compare("pthread_mutex_t") == 0) {
+                                            if(lname.compare((*(crits[j]->accessedvars))[v]->namestr) == 0) {
+                                                isUnlock = true;
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-                        std::string nodestring;
-                        PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
-                        PrintingPolicy& ppr = pp;
-                        llvm::raw_string_ostream os(nodestring);
-                        (*topIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                        if(isUnlock == false) {
-                            functext << "    " << os.str() << ";\n";
-                        }
-                        SourceRange locksr = crits[i]->lockstmt->getSourceRange();
-                        SourceManager& sm = TheContext->getSourceManager();
-                        StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-                        std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
-                        if(first == false) {
-                            /*Replacement rep = createAdjustedReplacementForSR(sr, TheContext, maprepv, "", false, nodestring.length()+2);
-                              maprepv.push_back(rep);
-                              FullSourceLoc fslend = FullSourceLoc((*topIterator)->getSourceRange().getEnd(), sm);
-                              bodyendpos = std::get<1>(fslend.getDecomposedLoc());
-                              std::cout << "bodyendpos: " << bodyendpos << std::endl;*/
-                        } else {
-                            nodestring = "";
-                            crits[i]->lockstmt->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                            firstrep = createAdjustedReplacementForSR(locksr, TheContext, maprepv, nodetext.str(), false, os.str().length()+2);
-                            /*FullSourceLoc fslstart = FullSourceLoc((*topIterator)->getSourceRange().getBegin(), sm);
-                              bodystartpos = std::get<1>(fslstart.getDecomposedLoc());
-                              maprepv.push_back(rep);*/
-                            first = false;
-                        }
-                        (*RepMap)[filename.str()] = maprepv;
-                        topIterator++;
-                        iternum++;
                     }
+                    std::string nodestring;
+                    PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                    PrintingPolicy& ppr = pp;
+                    llvm::raw_string_ostream os(nodestring);
+                    (*topIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                    if(isUnlock == false) {
+                        functext << "    " << os.str() << ";\n";
+                    }
+                    SourceRange locksr = crits[i]->lockstmt->getSourceRange();
+                    SourceManager& sm = TheContext->getSourceManager();
+                    StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                    std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                    if(first == false) {
+                        /*Replacement rep = createAdjustedReplacementForSR(sr, TheContext, maprepv, "", false, nodestring.length()+2);
+                          maprepv.push_back(rep);
+                          FullSourceLoc fslend = FullSourceLoc((*topIterator)->getSourceRange().getEnd(), sm);
+                          bodyendpos = std::get<1>(fslend.getDecomposedLoc());
+                          std::cout << "bodyendpos: " << bodyendpos << std::endl;*/
+                    } else {
+                        nodestring = "";
+                        crits[i]->lockstmt->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                        firstrep = createAdjustedReplacementForSR(locksr, TheContext, maprepv, nodetext.str(), false, os.str().length()+2);
+                        /*FullSourceLoc fslstart = FullSourceLoc((*topIterator)->getSourceRange().getBegin(), sm);
+                          bodystartpos = std::get<1>(fslstart.getDecomposedLoc());
+                          maprepv.push_back(rep);*/
+                        first = false;
+                    }
+                    (*RepMap)[filename.str()] = maprepv;
+                    topIterator++;
+                    iternum++;
+                }
+                if(topIterator == topBody->child_end()) {
+                    transformed--;
+                    critcount--;
+                    acrits--;
+                } else {
                     if(crits[i]->noMsgStruct == false) {
                         for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                             if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL && (*(crits[i]->accessedvars))[v]->needsReturn == true) {
@@ -870,10 +894,11 @@ Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContex
 
 void printCrits() {
     std::cout << "[CRITSSTART]\n" << std::endl;
+    unsigned i = 0;
     for(auto c : crits) {
         std::string lfname = c->funcwlock->getNameInfo().getAsString();
         std::string ulfname = c->funcwunlock->getNameInfo().getAsString();
-        std::cout << "Critical section belonging to lock '" << c->lockname << "' detected, with depth " << c->depth << ", lockdepth " << c->lockdepth << ", lockstatement '" << c->lockstmt << "', residing in function '" << lfname << "', and unlock statement '" << c->unlockstmt << "', residing in function '" << ulfname << "'." << std::endl;
+        std::cout << "Critical section " << i << " belonging to lock '" << c->lockname << "' detected, with depth " << c->depth << ", lockdepth " << c->lockdepth << ", lockstatement '" << c->lockstmt << "', residing in function '" << lfname << "', and unlock statement '" << c->unlockstmt << "', residing in function '" << ulfname << "'." << std::endl;
         if(c->noMsgStruct == true) {
             std::cout << "Has no message struct." << std::endl;
         } else {
@@ -902,17 +927,20 @@ void printCrits() {
             std::cout << "    " << v->typestr << " " << v->namestr << " of locality '" << v->locality << "'.\n        threadLocal: " << tloc << ", pointer: " << ptr << ", needsReturn: " << needsret << "." << std::endl;
         }
         std::cout << std::endl;
+        i++;
     }
     std::cout << "[CRITSEND]" << std::endl;
 }
 
 void deleteCrits() {
-    for(auto c : crits) {
-        for(auto v : *(c->accessedvars)) {
-            delete v;
+    for(unsigned c = 0; c < crits.size(); c++) {
+        std::cout << "Deleting crit " << c << " at " << crits[c] << "..." << std::endl;
+        for(unsigned i = 0; i < crits[c]->accessedvars->size(); i++) {
+            std::cout << "    Deleting variable " << i << " at " << crits[c]->accessedvars->at(i) << "..." << std::endl;
+            delete crits[c]->accessedvars->at(i);
         }
-        delete c->accessedvars;
-        delete c;
+        delete crits[c]->accessedvars;
+        delete crits[c];
     }
 }
 
@@ -944,7 +972,6 @@ int main(int argc, const char **argv) {
     std::string filename = splistvec[0];
     char* fullpath = realpath(filename.c_str(), NULL);
     filename = std::string(fullpath);
-    std::cout << "Filename: " << filename << "." << std::endl;
     //std::cout << "[SPLISTEND]" << std::endl;
     std::vector<std::string> args(argc-2);
     for(int i = 0; i < argc-2; i++) {
@@ -1001,6 +1028,7 @@ int main(int argc, const char **argv) {
     cmd << "cp " << filename << " " << filename2;
     system(cmd.str().c_str());
     //llvm::outs() << "Saving to " << filename << " (original code backed up to "<< filename2 << ")...\n";
+    std::cout << "Filename: " << filename << "." << std::endl;
     std::cout << "Critical sections counted: " << critcount << std::endl;
     std::cout << "Successfully transformed: " << transformed << std::endl;
     std::cout << "Type A: " << acrits << std::endl;
