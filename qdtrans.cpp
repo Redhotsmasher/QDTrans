@@ -433,16 +433,15 @@ public:
             std::cout << tstr2 << " == " << tstr << " && " << name2 << " == " << name << std::endl;
             if(tstr2 == tstr && name2 == name) {
                 return true;
-            } else {
-                if(s->child_begin() != s->child_end()) {
-                    Stmt::child_iterator ChildIterator = s->child_begin();
-                    while(ChildIterator != s->child_end()) {
-                        if(checkDeclRefsRecursive(*ChildIterator, tstr, name) == true) {
-                            return true;
-                        }
-                        ChildIterator++;
-                    }
+            }
+        } 
+        if(s->child_begin() != s->child_end()) {
+            Stmt::child_iterator ChildIterator = s->child_begin();
+            while(ChildIterator != s->child_end()) {
+                if(checkDeclRefsRecursive(*ChildIterator, tstr, name) == true) {
+                    return true;
                 }
+                ChildIterator++;
             }
         }
         return false;
@@ -475,33 +474,41 @@ public:
         return true;
     }
 
-    void AddStructs(bool addEmptyStructs) {
+    void AddStructs(bool addEmptyStructs, bool addStructs) {
         //std::cout << "Adding structs..." << std::endl;
         for(unsigned i = 0; i < crits.size(); i++) {
             std::stringstream nodetext;
             nodetext << "struct critSec" << i << "_msg {\n";
             unsigned varcount = 0;
             for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
-                if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL) {
+                if(((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL) || ((*(crits[i]->accessedvars))[v]->locality == FUNLOCAL) || (((*(crits[i]->accessedvars))[v]->locality == CRITLOCAL) && ((*(crits[i]->accessedvars))[v]->needsReturn == true))) {
                     nodetext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                     varcount++;
                 }
             }
             nodetext << "};\n\n";
-            if(varcount > 0 || addEmptyStructs == true) {
-                std::cout << "Critical section " << i << " has a message struct." << std::endl;
-                crits[i]->noMsgStruct = false;
-                std::cout << "noMsgStruct: " << crits[i]->noMsgStruct << std::endl;
-                SourceManager& sm = TheContext->getSourceManager();
-                StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-                std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
-                Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, nodetext.str(), true, 0);
-                maprepv.push_back(rep);
-                (*RepMap)[filename.str()] = maprepv;
+            if(addStructs == true) {
+                if(varcount > 0 || addEmptyStructs == true) {
+                    crits[i]->noMsgStruct = false;
+                    SourceManager& sm = TheContext->getSourceManager();
+                    StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                    std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                    Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, nodetext.str(), true, 0);
+                    maprepv.push_back(rep);
+                    (*RepMap)[filename.str()] = maprepv;
+                } else {
+                    crits[i]->noMsgStruct = true;
+                }
             } else {
-                std::cout << "Critical section " << i << " has no message struct." << std::endl;
-                crits[i]->noMsgStruct = true;
-                std::cout << "noMsgStruct: " << crits[i]->noMsgStruct << std::endl;
+                if(varcount > 0 || addEmptyStructs == true) {
+                    std::cout << "Critical section " << i << " has a message struct." << std::endl;
+                    crits[i]->noMsgStruct = false;
+                    std::cout << "noMsgStruct: " << crits[i]->noMsgStruct << std::endl;
+                } else {
+                    std::cout << "Critical section " << i << " has no message struct." << std::endl;
+                    crits[i]->noMsgStruct = true;
+                    std::cout << "noMsgStruct: " << crits[i]->noMsgStruct << std::endl;
+                }
             }
         }
     }
@@ -937,8 +944,9 @@ public:
         std::cout << "Done scanning.\n" << std::endl;
         printCrits();
         ModifyingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
-        ModifyingVisitor.AddStructs(false);
+        ModifyingVisitor.AddStructs(false, false);
         ModifyingVisitor.TransformFunctions();
+        ModifyingVisitor.AddStructs(false, true);
         FinalizingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
         //printCrits();
     }
