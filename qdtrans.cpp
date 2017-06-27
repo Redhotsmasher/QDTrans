@@ -283,14 +283,23 @@ public:
         return true;
     }
 
-    void fixCrits() { // Crude fix for crits sometimes having invalid (NULL) unlock statements because pushing to repvec is flaky.
+    void fixCrits() { // Crude fix for crits sometimes having invalid (NULL) unlock statements because pushing to repvec is flaky. Also removes duplicate crits.
         std::vector<struct criticalSection*>::iterator criterator = crits.begin();
+        unsigned num = 0;
         while(criterator != crits.end()) {
             if((*criterator)->unlockstmt == NULL) {
                 delete *criterator;
                 crits.erase(criterator);
+            } else {
+                for(unsigned i = 0; i < crits.size(); i++) {
+                    if(num != i && *criterator == crits[i]) {
+                        delete *criterator;
+                        crits.erase(criterator);
+                    }
+                }
             }
             criterator++;
+            num++;
         }
     }
 };
@@ -348,12 +357,15 @@ public:
                             dodo = false;
                         }
                     }
+                    s->dump();
+                    std::cout << std::get<1>(FullSourceLoc(sloc, sm).getDecomposedLoc()) << std::endl;
+                    std::cout << sm.getPresumedLoc(sm.getSpellingLoc(sloc), false).getFilename() << " == " << sm.getFileEntryForID(sm.getMainFileID())->getName().str() << std::endl;
                     for(auto c : crits) {
                         /*std::string lfname = c->funcwlock->getNameInfo().getAsString();
                           std::string ulfname = c->funcwunlock->getNameInfo().getAsString();
                           std::cout << "Critical section " << i << " belonging to lock '" << c->lockname << "' detected, with length " << c->end-c->start << ", depth " << c->depth << ", lockdepth " << c->lockdepth << ", lockstatement '" << c->lockstmt << "' at position " << c->start << ", residing in function '" << lfname << "', and unlock statement '" << c->unlockstmt << "' at position " << c->end << ", residing in function '" << ulfname << "'." << std::endl;
                           i++;*/
-                        if((sm.getPresumedLoc(sm.getSpellingLoc(sloc)).getFilename() == sm.getFileEntryForID(sm.getMainFileID())->getName()) && (FullSourceLoc(sloc, sm).isBeforeInTranslationUnitThan(c->unlockstmt->getLocStart()) == true && FullSourceLoc(c->lockstmt->getLocStart(), sm).isBeforeInTranslationUnitThan(sloc)) == true) {
+                        if((sm.getPresumedLoc(sm.getSpellingLoc(sloc), false).getFilename() == sm.getFileEntryForID(sm.getMainFileID())->getName()) && (FullSourceLoc(sloc, sm).isBeforeInTranslationUnitThan(c->unlockstmt->getLocStart()) == true && FullSourceLoc(c->lockstmt->getLocStart(), sm).isBeforeInTranslationUnitThan(sloc)) == true) {
                             //if(isa<FunctionDecl>(e->)
                             bool dup = false;
                             for(auto v : *(c->accessedvars)) {
@@ -396,9 +408,20 @@ public:
                                     }
                                 }
                                 if(newvar->locality == CRITLOCAL || newvar->locality == FUNLOCAL) {
-                                    if(c->depth == 0 && c->typeA == true) {
+                                    if(c->lockdepth == 0 && c->typeA == true) {
                                         Stmt::child_iterator ChildIterator = c->funcwunlock->getBody()->child_begin();
+                                        /*std::cout << "c->unlockstmt = ";
+                                        c->funcwunlock->getBody()->dumpPretty(*TheContext);
+                                        std::cout << std::endl;
+                                        bool ended = false;*/
                                         while(*ChildIterator != c->unlockstmt) {
+                                            /*if(*ChildIterator != NULL && ended == false) {
+                                                (*ChildIterator)->dumpPretty(*TheContext);
+                                                std::cout << *ChildIterator << " == " << c->unlockstmt << std::endl;
+                                            }
+                                            if(ChildIterator == c->funcwunlock->getBody()->child_end()) {
+                                                ended = true;
+                                                }*/
                                             ChildIterator++;
                                         }
                                         while(ChildIterator != c->funcwunlock->getBody()->child_end()) {
@@ -430,7 +453,7 @@ public:
             DeclarationNameInfo declname2 = ((DeclRefExpr*)(s))->getNameInfo();
             std::string name2 = declname2.getName().getAsString();
             std::string tstr2 = ((DeclRefExpr*)(s))->getDecl()->getType().getAsString();
-            std::cout << tstr2 << " == " << tstr << " && " << name2 << " == " << name << std::endl;
+            //std::cout << tstr2 << " == " << tstr << " && " << name2 << " == " << name << std::endl;
             if(tstr2 == tstr && name2 == name) {
                 return true;
             }
@@ -466,7 +489,7 @@ public:
     bool VisitDecl(Decl *d) {
         if(isa<FunctionDecl>(d)) {
             SourceManager& sm = TheContext->getSourceManager();
-            if(((SRset == false) || (isSRLessThan(d->getSourceRange(), SRToAddTo, TheContext) == true)) && sm.getPresumedLoc(sm.getSpellingLoc(d->getLocation())).getFilename() == sm.getFileEntryForID(sm.getMainFileID())->getName()) {
+            if(((SRset == false) || (isSRLessThan(d->getSourceRange(), SRToAddTo, TheContext) == true)) && sm.getPresumedLoc(sm.getSpellingLoc(d->getLocation()), false).getFilename() == sm.getFileEntryForID(sm.getMainFileID())->getName()) {
                 SRToAddTo = d->getSourceRange();
                 SRset = true;
             }
@@ -534,7 +557,7 @@ public:
             }
             functext << "void critSec" << i << "(unsigned int sz, void* msgP) {\n";
             if(crits[i]->noMsgStruct == false) {
-                functext << "    critSec" << i << "_msg* cs" << i << "msg = (critSec" << i << "_msg*)msgP;\n";
+                functext << "    struct critSec" << i << "_msg* cs" << i << "msg = (struct critSec" << i << "_msg*)msgP;\n";
                 for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                     if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL) {
                         functext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = " << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
@@ -905,6 +928,7 @@ public:
                 NamedDecl* nd = cast<NamedDecl>(d);
                 std::string declname = nd->getName().str();
                 for(unsigned c = 0; c < crits.size(); c++) {
+                    std::cout << "if(" << crits[c]->lockname << ".find(" << declname << ", 0)" << std::endl;
                     if(crits[c]->lockname.find(declname, 0) != std::string::npos && declname != "") {
                         isQD = true;
                         break;
