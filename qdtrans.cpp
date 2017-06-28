@@ -286,15 +286,35 @@ public:
     void fixCrits() { // Crude fix for crits sometimes having invalid (NULL) unlock statements because pushing to repvec is flaky. Also removes duplicate crits.
         std::vector<struct criticalSection*>::iterator criterator = crits.begin();
         unsigned num = 0;
+        std::cout << "Crits go from " << *crits.begin() << " to " << *crits.end() << "." << std::endl;
         while(criterator != crits.end()) {
+            std::cout << *criterator << " with lockstmt " << (*criterator)->lockstmt << std::endl;
+            for(unsigned i = 0; i < crits.size(); i++) {
+                if(num != i && *criterator == crits[i]) {
+                    crits.erase(criterator);
+                    criterator++;
+                }
+            }
+            criterator++;
+            num++;
+        }
+        criterator = crits.begin();
+        num = 0;
+        std::cout << "Crits go from " << *crits.begin() << " to " << *crits.end() << "." << std::endl;
+        while(*criterator != *crits.end()) {
             if((*criterator)->unlockstmt == NULL) {
                 delete *criterator;
                 crits.erase(criterator);
             } else {
                 for(unsigned i = 0; i < crits.size(); i++) {
-                    if(num != i && *criterator == crits[i]) {
-                        delete *criterator;
+                    /*if(num != i) {
+                        std::cout << (*criterator)->lockstmt << " == " << crits[i]->lockstmt << std::endl;
+                        }*/
+                    if(num != i && (*criterator)->lockstmt == crits[i]->lockstmt) {
+                        std::cout << "Deleting " << *criterator << " with lockstmt " << (*criterator)->lockstmt << std::endl;
+                        //delete *criterator;
                         crits.erase(criterator);
+                        criterator++;
                     }
                 }
             }
@@ -357,9 +377,9 @@ public:
                             dodo = false;
                         }
                     }
-                    s->dump();
+                    /*s->dump();
                     std::cout << std::get<1>(FullSourceLoc(sloc, sm).getDecomposedLoc()) << std::endl;
-                    std::cout << sm.getPresumedLoc(sm.getSpellingLoc(sloc), false).getFilename() << " == " << sm.getFileEntryForID(sm.getMainFileID())->getName().str() << std::endl;
+                    std::cout << sm.getPresumedLoc(sm.getSpellingLoc(sloc), false).getFilename() << " == " << sm.getFileEntryForID(sm.getMainFileID())->getName().str() << std::endl;*/
                     for(auto c : crits) {
                         /*std::string lfname = c->funcwlock->getNameInfo().getAsString();
                           std::string ulfname = c->funcwunlock->getNameInfo().getAsString();
@@ -461,7 +481,7 @@ public:
         if(s->child_begin() != s->child_end()) {
             Stmt::child_iterator ChildIterator = s->child_begin();
             while(ChildIterator != s->child_end()) {
-                if(checkDeclRefsRecursive(*ChildIterator, tstr, name) == true) {
+                if(*ChildIterator != NULL && checkDeclRefsRecursive(*ChildIterator, tstr, name) == true) {
                     return true;
                 }
                 ChildIterator++;
@@ -588,9 +608,9 @@ public:
                 nodetext << ", sizeof(" << structname << "), " << structname << ");\n";
                 for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                     if(((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL) && (*(crits[i]->accessedvars))[v]->needsReturn == true) {
-                        nodetext << "    " << (*(crits[i]->accessedvars))[v]->namestr << " = " << "cs" << i << "msg->" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                        nodetext << "    " << (*(crits[i]->accessedvars))[v]->namestr << " = " << "cs" << i << "msg." << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                     } else if((*(crits[i]->accessedvars))[v]->locality == CRITLOCAL && (*(crits[i]->accessedvars))[v]->needsReturn == true) {
-                        nodetext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = " << "cs" << i << "msg->" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                        nodetext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = " << "cs" << i << "msg." << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                     }
                 }
             } else {
@@ -935,14 +955,23 @@ public:
                     }
                 }
                 if(isQD == true) {
-                    std::stringstream newnode;
-                    newnode << "QDLock " << declname << ";\n";
                     SourceManager& sm = TheContext->getSourceManager();
-                    StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-                    std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
-                    Replacement rep = createAdjustedReplacementForSR(d->getSourceRange(), TheContext, maprepv, newnode.str(), true, declname.length()+18);
-                    maprepv.push_back(rep);
-                    (*RepMap)[filename.str()] = maprepv;
+                    SourceLocation dloc = d->getLocation();
+                    if(sm.getPresumedLoc(sm.getSpellingLoc(dloc), false).getFilename() == sm.getFileEntryForID(sm.getMainFileID())->getName()) {
+                        std::stringstream newnode;
+                        newnode << "QDLock " << declname << ";\n";
+                        StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                        std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                        Replacement rep = createAdjustedReplacementForSR(d->getSourceRange(), TheContext, maprepv, newnode.str(), true, declname.length()+18);
+                        maprepv.push_back(rep);
+                        (*RepMap)[filename.str()] = maprepv;
+                    } else {
+                        std::cout << "Lock " << declname << "'s declaration is inside file " << sm.getPresumedLoc(sm.getSpellingLoc(dloc), false).getFilename() << "." << std::endl;
+                        /*FileManager& myFiles = sm.getFileManager();
+                        const FileEntry *myFileEntry = myFiles.getFile(filename);
+                        myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
+                        Multi file support is WIP, disabled for now*/
+                    }
                 }
             }
         }
