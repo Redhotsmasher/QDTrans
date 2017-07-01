@@ -582,7 +582,7 @@ public:
         SourceManager& sm = TheContext->getSourceManager();
         StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
         std::vector<Replacement> mrv = (*RepMap)[filename.str()];
-        Replacement headerrep = createAdjustedReplacementForSR(SRToAddTo, TheContext, mrv, headerinclude, true, 0);
+        Replacement headerrep = Replacement(filename, 0, 0, StringRef(headerinclude));
         mrv.push_back(headerrep);
         (*RepMap)[filename.str()] = mrv;
         for(unsigned i = 0; i < crits.size(); i++) {
@@ -942,7 +942,8 @@ public:
                             newnode << "LL_initialize(" << lname << ");\n";
                             length = 28+lname.length();
                         } else {
-                            newnode << "LL_destroy(" << lname << ");\n";
+                            //newnode << "LL_destroy(" << lname << ");\n";
+                            newnode << ""; // Fix for weird issue, shouldn't matter since LL_destroy doesn't actually do anything.
                             length = 25+lname.length();
                         }
                         //e->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
