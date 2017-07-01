@@ -1279,9 +1279,5 @@ int main(int argc, const char **argv) {
     //myFiles.PrintStats();
     free(fullpath);
     deleteCrits();
-    //return result;
-    return 0;
+    return result;
 }
-
-
-
