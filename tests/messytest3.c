@@ -41,5 +41,9 @@ int main() {
     pthread_mutex_destroy(&(sip->lock));
     sem_destroy(&sem);
     printf("%d\n", sip->value); // Should print "2".
-    return (sip->value+foo)-4;
+    if(sip->value+foo == 3 || sip->value+foo == 4) {
+        return 0;
+    } else {
+        return 1;
+    }
 }
