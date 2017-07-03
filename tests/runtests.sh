@@ -22,17 +22,19 @@ for i in *.c ; do
     fn=${i%%.*}
     $HOME/clang-llvm/build/bin/qdtrans $i
     trans[$count]=$?
-    gcc -g $i libqd_lock_lib.a -Iheaders/ -o $fn
+    gcc -g $i libqd_lock_lib.a -Iheaders/ -o $fn -lpthread
     gcc[$count]=$?
-    clang -g $i libqd_lock_lib.a -Iheaders/ -o $fn
+    clang -g $i libqd_lock_lib.a -Iheaders/ -o $fn -lpthread
     clang[$count]=$?
     ./$fn
     run[$count]=$?
-    count=$(( $count + 1 ))
-    rm $fn
-    rm $i
-    mv $fn.noqd.bak $i
+    if [ ${gcc[$count]} -eq 0 -o ${gcc[$count]} -eq 0 ]
+    then
+        rm $fn
+    fi
+    mv -f $fn.noqd.bak $i
     rm $fn.qd.c
+    count=$(( $count + 1 ))
 done
 
 printf "\n\nSummary:\n\n"
@@ -48,7 +50,7 @@ for i in *.c ; do
     then
         printf "║%14s│${red}FAILS${reset}│${yellow} N/A ${reset}│${yellow} N/A ${reset}│${yellow} N/A ${reset}║\n" $i
     else
-        if [ "${gcc[$count]} -eq 0" -a "${clang[$count]} -eq 0" ]
+        if [ ${gcc[$count]} -eq 0 -a ${clang[$count]} -eq 0 ]
         then
             if [ ${run[$count]} -eq 0 ]
             then
@@ -57,7 +59,7 @@ for i in *.c ; do
                 printf "║%14s│${green}WORKS${reset}│${green}WORKS${reset}│${green}WORKS${reset}│${red}FAILS${reset}║\n" $i
             fi
         else
-            if [ "${gcc[$count]} -ne 0" -a "${clang[$count]} -ne 0" ]
+            if [ ${gcc[$count]} -ne 0 -a ${clang[$count]} -ne 0 ]
             then
                 printf "║%14s│${green}WORKS${reset}│${red}FAILS${reset}│${red}FAILS${reset}│${yellow} N/A ${reset}║\n" $i
             else
