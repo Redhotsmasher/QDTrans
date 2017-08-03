@@ -7,6 +7,7 @@
 #include <sstream>
 #include <cstdlib>
 #include <system_error>
+#include <algorithm>
 
 #include <limits.h>
 
@@ -91,6 +92,10 @@ unsigned bcrits = 0;
 unsigned ccrits = 0;
 
 Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection, int newlength);
+
+Replacement createInjectedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text);
+
+Replacement createEndReplacement(ASTContext* TheContext, std::vector<Replacement>& repv, std::string text);
 
 /* Returns true if sr1 < sr2, false otherwise */
 bool isSRLessThan(SourceRange sr1, SourceRange sr2, ASTContext* TheContext);
@@ -357,6 +362,7 @@ public:
             SourceLocation sloc;
             std::string name;
             std::string tstr;
+            std::string ctstr;
             clang::DeclStmt::decl_iterator DeclIterator;
             Decl* d;
             if(isa<DeclRefExpr>(s)) {
@@ -385,7 +391,7 @@ public:
                             d = *DeclIterator;
                             if(isa<VarDecl>(d)) {
                                 name = cast<VarDecl>(d)->getNameAsString();
-                                tstr = cast<ValueDecl>(d)->getType().getAsString();
+                                tstr = cast<VarDecl>(d)->getType().getAsString();
                                 sloc = d->getLocation();
                             } else {
                                 name = "";
@@ -520,27 +526,53 @@ public:
 class ModifyingASTVisitor : public RecursiveASTVisitor<ModifyingASTVisitor> {
 private:
     ASTContext *TheContext;
-    SourceRange SRToAddTo;
+    SourceRange SRToAddProtosTo;
     bool SRset = false;
 public:
     ModifyingASTVisitor(ASTContext *C) : TheContext(C) {}
 
     bool VisitDecl(Decl *d) {
+        SourceManager& sm = TheContext->getSourceManager();
         if(isa<FunctionDecl>(d)) {
-            SourceManager& sm = TheContext->getSourceManager();
-            if(((SRset == false) || (isSRLessThan(d->getSourceRange(), SRToAddTo, TheContext) == true)) && sm.getPresumedLoc(sm.getSpellingLoc(d->getLocation()), false).getFilename() == sm.getFileEntryForID(sm.getMainFileID())->getName()) {
-                SRToAddTo = d->getSourceRange();
+            if(((SRset == false) || (isSRLessThan(d->getSourceRange(), SRToAddProtosTo, TheContext) == true)) && sm.getPresumedLoc(sm.getSpellingLoc(d->getLocation()), false).getFilename() == sm.getFileEntryForID(sm.getMainFileID())->getName()) {
+                SRToAddProtosTo = d->getSourceRange();
                 SRset = true;
             }
         }
         return true;
     }
 
+    /*void AddTypedefsAndGlobals() {
+        for(unsigned i = 0; i < crits.size(); i++) {
+            for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
+                std::stringstream nodetext;
+                bool push = false;
+                if(crits[i]->accessedvars->at(v)->cantypestr != crits[i]->accessedvars->at(v)->typestr) {
+                    nodetext << "typedef " << crits[i]->accessedvars->at(v)->cantypestr << " " << crits[i]->accessedvars->at(v)->typestr << ";\n\n";
+                    push = true;
+                }
+                if(crits[i]->accessedvars->at(v)->locality == GLOBAL) {
+                    nodetext << crits[i]->accessedvars->at(v)->typestr << " " << crits[i]->accessedvars->at(v)->namestr << ";\n\n";
+                    push = true;
+                }
+                if(push == true) {
+                    SourceManager& sm = TheContext->getSourceManager();
+                    StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                    std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                    Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, nodetext.str(), true, 0);                maprepv.push_back(rep);
+                    (*RepMap)[filename.str()] = maprepv;
+                }
+            }
+        }
+    }*/
+
     void AddStructs(bool addEmptyStructs, bool addStructs) {
         std::cout << "Adding structs..." << std::endl;
         for(unsigned i = 0; i < crits.size(); i++) {
             std::stringstream nodetext;
+            std::stringstream pnodetext;
             std::string lfname = crits[i]->funcwlock->getNameInfo().getAsString();
+            pnodetext << "struct " << lfname << "_critSec" << i << "_msg;\n";
             nodetext << "struct " << lfname << "_critSec" << i << "_msg {\n";
             unsigned varcount = 0;
             for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
@@ -556,7 +588,11 @@ public:
                     SourceManager& sm = TheContext->getSourceManager();
                     StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
                     std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
-                    Replacement rep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, nodetext.str(), true, 0);
+                    std::cout << "Function " << crits[i]->funcwlock->getNameInfo().getAsString() << " goes from " << crits[i]->funcwlock->getSourceRange().getBegin().printToString(sm) << " to " << crits[i]->funcwlock->getSourceRange().getEnd().printToString(sm) << ".\n";
+                    Replacement rep = createAdjustedReplacementForSR(crits[i]->funcwlock->getSourceRange(), TheContext, maprepv, nodetext.str(), true, 0);
+                        //createInjectedReplacementForSR(crits[i]->funcwlock->getSourceRange(), TheContext, maprepv, nodetext.str());
+                    Replacement rep2 = createAdjustedReplacementForSR(SRToAddProtosTo, TheContext, maprepv, pnodetext.str(), true, 0);
+                    maprepv.push_back(rep2);
                     maprepv.push_back(rep);
                     (*RepMap)[filename.str()] = maprepv;
                 } else {
@@ -588,6 +624,7 @@ public:
         for(unsigned i = 0; i < crits.size(); i++) {
             std::stringstream nodetext;
             std::stringstream functext;
+            std::stringstream functext2;
             Replacement deleterep;
             Replacement firstrep;
             std::string structname;
@@ -603,9 +640,10 @@ public:
                     }
                 }
             }
+            functext2 << "void " << lfname << "_critSec" << i << "(unsigned int sz, void* msgP);\n\n";
             functext << "void " << lfname << "_critSec" << i << "(unsigned int sz, void* msgP) {\n";
             if(crits[i]->noMsgStruct == false) {
-                functext << "    struct " << lfname << "_critSec" << i << "_msg* " << lfname << "_cs" << i << "msg = (struct critSec" << i << "_msg*)msgP;\n";
+                functext << "    struct " << lfname << "_critSec" << i << "_msg* " << lfname << "_cs" << i << "msg = (struct " << lfname << "_critSec" << i << "_msg*)msgP;\n";
                 for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                     if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL) {
                         functext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = " << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
@@ -742,8 +780,11 @@ public:
                     std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
                 
                     functext << "}\n\n";
-                    Replacement funcrep = createAdjustedReplacementForSR(SRToAddTo, TheContext, maprepv, functext.str(), true, 0);
+                    //Replacement funcrep = createEndReplacement(TheContext, maprepv, functext.str());
+                    Replacement funcrep = createAdjustedReplacementForSR(crits[i]->funcwlock->getSourceRange(), TheContext, maprepv, functext.str(), true, 0);
+                    Replacement funcrep2 = createAdjustedReplacementForSR(SRToAddProtosTo, TheContext, maprepv, functext2.str(), true, 0);
                     maprepv.push_back(funcrep);
+                    maprepv.push_back(funcrep2);
                     maprepv.push_back(deleterep);
                     maprepv.push_back(firstrep);
                     //std::cout << "Pushed to " << filename.str() << "." << std::endl;
@@ -1089,9 +1130,15 @@ bool isSRInside(SourceRange sr1, SourceRange sr2, ASTContext* TheContext) {
 
 Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection, int newlength) {
     SourceManager& sm = TheContext->getSourceManager();
-    FullSourceLoc fslstart = FullSourceLoc(sr.getBegin(), sm);
-    FullSourceLoc fslend = FullSourceLoc(sr.getEnd(), sm);
+    FullSourceLoc fslstart = FullSourceLoc(sr.getBegin(), sm).getExpansionLoc();
+    FullSourceLoc fslend = FullSourceLoc(sr.getEnd(), sm).getExpansionLoc();
+    std::cerr << "\nDump:\n";
+    fslstart.dump();
+    fslstart.getExpansionLoc().dump();
+    fslstart.getSpellingLoc().dump();
     unsigned start = std::get<1>(fslstart.getDecomposedLoc());
+    std::cout << "Start: " << start << ".\n";
+    std::cout << "Text: " << text << ".\n";
     unsigned length;
     if(newlength == 0) {
         if(injection == true) {
@@ -1112,6 +1159,20 @@ Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContex
     //std::cout << "Start: " << start << ", End: " << start+length << std::endl;
     //std::cout << "AdjStart: " << adjstart << ", AdjEnd: " << adjstart+length << std::endl;
     Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), start, length, StringRef(text));
+    return newReplacement;
+}
+
+Replacement createInjectedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text) {
+    SourceManager& sm = TheContext->getSourceManager();
+    Replacement newReplacement = Replacement(sm, sr.getBegin(), 0, StringRef(text));
+    return newReplacement;    
+}
+
+Replacement createEndReplacement(ASTContext* TheContext, std::vector<Replacement>& repv, std::string text) {
+    SourceManager& sm = TheContext->getSourceManager();
+    //std::cout << "Start: " << start << ", End: " << start+length << std::endl;
+    //std::cout << "AdjStart: " << adjstart << ", AdjEnd: " << adjstart+length << std::endl;
+    Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), sm.getFileEntryForID(sm.getMainFileID())->getSize()-1, 0, StringRef(text));
     return newReplacement;
 }
 
@@ -1227,9 +1288,10 @@ int main(int argc, const char **argv) {
     Rewriter Rw = Rewriter(sm, lopts);
     //sm.overrideFileContents(myFileEntry, myFileBuffer.get().get(), false);
     std::vector<Replacement> mainrepv = (*RepMap)[filename];
-    //llvm::outs() << "[REPSSTART]\n";
+    std::cout << "[REPSSTART]\n";
     /*auto*/const RewriteBuffer * myFileBuffer;
     bool started = false;
+    //std::sort(mainrepv.begin(), mainrepv.end());
     for(auto r : mainrepv) {
         if(started == true) {
             //myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
@@ -1237,15 +1299,16 @@ int main(int argc, const char **argv) {
         } else {
             started = true;
         }
-        //std::cout << r.toString() << std::endl;
+        std::cout << r.toString() << "\n" << r.getFilePath().str() << std::endl;
+        std::cout << "Offset: " << r.getOffset() << std::endl;
         r.apply(Rw);
-        /*auto myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
+        myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
         llvm::outs() << "[BUFSTART:" << myFileBuffer->size() << "]\n";
         
-        myFileBuffer->write(llvm::outs());*/
-        //llvm::outs() << "[BUFEND]\n";
+        myFileBuffer->write(llvm::outs());
+        llvm::outs() << "[BUFEND]\n";
     }
-    //llvm::outs() << "[REPSEND]\n";
+    std::cout << "[REPSEND]\n";
     /*auto myFileBuffer = myFiles.getBufferForFile(filename);
     if(!myFileBuffer) {
         std::cerr << "Nope" << std::endl;
