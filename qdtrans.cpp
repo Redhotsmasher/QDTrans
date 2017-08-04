@@ -10,6 +10,7 @@
 #include <algorithm>
 
 #include <limits.h>
+#include <sys/stat.h>
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -40,6 +41,7 @@
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 
 #include "llvm/Support/FileSystem.h"
+
 
 typedef int* intptr;
 
@@ -95,7 +97,7 @@ Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContex
 
 Replacement createInjectedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text);
 
-Replacement createEndReplacement(ASTContext* TheContext, std::vector<Replacement>& repv, std::string text);
+//Replacement createEndReplacement(ASTContext* TheContext, std::vector<Replacement>& repv, std::string text);
 
 /* Returns true if sr1 < sr2, false otherwise */
 bool isSRLessThan(SourceRange sr1, SourceRange sr2, ASTContext* TheContext);
@@ -589,7 +591,9 @@ public:
                     StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
                     std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
                     std::cout << "Function " << crits[i]->funcwlock->getNameInfo().getAsString() << " goes from " << crits[i]->funcwlock->getSourceRange().getBegin().printToString(sm) << " to " << crits[i]->funcwlock->getSourceRange().getEnd().printToString(sm) << ".\n";
-                    Replacement rep = createAdjustedReplacementForSR(crits[i]->funcwlock->getSourceRange(), TheContext, maprepv, nodetext.str(), true, 0);
+                    SourceRange bodysr = crits[i]->funcwlock->getBody()->getSourceRange();
+                    SourceLocation addsl = sm.translateFileLineCol(sm.getFileEntryForID(sm.getMainFileID()), FullSourceLoc(bodysr.getBegin(), sm).getExpansionLineNumber()-1, 1);
+                    Replacement rep = createAdjustedReplacementForSR(SourceRange(addsl, addsl), TheContext, maprepv, nodetext.str(), true, 0);
                         //createInjectedReplacementForSR(crits[i]->funcwlock->getSourceRange(), TheContext, maprepv, nodetext.str());
                     Replacement rep2 = createAdjustedReplacementForSR(SRToAddProtosTo, TheContext, maprepv, pnodetext.str(), true, 0);
                     maprepv.push_back(rep2);
@@ -636,7 +640,7 @@ public:
                 nodetext << "struct " << lfname << "_critSec" << i << "_msg " << structname << ";\n";
                 for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                     if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL) {
-                        nodetext << "    " << structname << "." << (*(crits[i]->accessedvars))[v]->namestr << " = " << (*(crits[i]->accessedvars))[v]->namestr << ";\n\n";
+                        nodetext << "    " << structname << "." << (*(crits[i]->accessedvars))[v]->namestr << " = " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                     }
                 }
             }
@@ -781,7 +785,9 @@ public:
                 
                     functext << "}\n\n";
                     //Replacement funcrep = createEndReplacement(TheContext, maprepv, functext.str());
-                    Replacement funcrep = createAdjustedReplacementForSR(crits[i]->funcwlock->getSourceRange(), TheContext, maprepv, functext.str(), true, 0);
+                    SourceRange bodysr = crits[i]->funcwlock->getBody()->getSourceRange();
+                    SourceLocation addsl = sm.translateFileLineCol(sm.getFileEntryForID(sm.getMainFileID()), FullSourceLoc(bodysr.getBegin(), sm).getExpansionLineNumber()-1, 1);
+                    Replacement funcrep = createAdjustedReplacementForSR(SourceRange(addsl, addsl), TheContext, maprepv, functext.str(), true, 0);
                     Replacement funcrep2 = createAdjustedReplacementForSR(SRToAddProtosTo, TheContext, maprepv, functext2.str(), true, 0);
                     maprepv.push_back(funcrep);
                     maprepv.push_back(funcrep2);
@@ -1130,21 +1136,20 @@ bool isSRInside(SourceRange sr1, SourceRange sr2, ASTContext* TheContext) {
 
 Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection, int newlength) {
     SourceManager& sm = TheContext->getSourceManager();
-    FullSourceLoc fslstart = FullSourceLoc(sr.getBegin(), sm).getExpansionLoc();
-    FullSourceLoc fslend = FullSourceLoc(sr.getEnd(), sm).getExpansionLoc();
+    FullSourceLoc fslstart = FullSourceLoc(sm.getFileLoc(sr.getBegin()), sm);
+    FullSourceLoc fslend = FullSourceLoc(sm.getFileLoc(sr.getEnd()), sm);
+    //FullSourceLoc gslstart = FullSourceLoc(sm.translateFileLineCol(sm.getFileEntryForID(sm.getMainFileID()), fslstart.getLine(), unsigned Col));
     std::cerr << "\nDump:\n";
-    fslstart.dump();
-    fslstart.getExpansionLoc().dump();
-    fslstart.getSpellingLoc().dump();
-    unsigned start = std::get<1>(fslstart.getDecomposedLoc());
-    std::cout << "Start: " << start << ".\n";
-    std::cout << "Text: " << text << ".\n";
+    unsigned start = sm.getFileOffset(fslstart);
+    /*std::string string = sm.getFileEntryForID(sm.getFileID(fslstart))->getName().str();
+    std::cout << "Text: " << text << std::endl;
+    std::cout << "Start: Offset " << start << " in file " << string << "." << std::endl;*/
     unsigned length;
     if(newlength == 0) {
         if(injection == true) {
             length = 0;
         } else {
-            length = std::get<1>(fslend.getDecomposedLoc())-start;
+            length = sm.getFileOffset(fslend)-start;
         }
     } else {
         length = newlength;
@@ -1168,13 +1173,13 @@ Replacement createInjectedReplacementForSR(SourceRange sr, ASTContext* TheContex
     return newReplacement;    
 }
 
-Replacement createEndReplacement(ASTContext* TheContext, std::vector<Replacement>& repv, std::string text) {
+/*Replacement createEndReplacement(ASTContext* TheContext, std::vector<Replacement>& repv, std::string text) {
     SourceManager& sm = TheContext->getSourceManager();
     //std::cout << "Start: " << start << ", End: " << start+length << std::endl;
     //std::cout << "AdjStart: " << adjstart << ", AdjEnd: " << adjstart+length << std::endl;
     Replacement newReplacement = Replacement(sm.getFileEntryForID(sm.getMainFileID())->getName(), sm.getFileEntryForID(sm.getMainFileID())->getSize()-1, 0, StringRef(text));
     return newReplacement;
-}
+}*/
 
 void printCrits() {
     std::cout << "[CRITSSTART]\n" << std::endl;
@@ -1229,6 +1234,12 @@ void deleteCrits() {
     }
 }
 
+long GetFileSize(std::string filename) {
+    struct stat stat_buf;
+    int rc = stat(filename.c_str(), &stat_buf);
+    return rc == 0 ? stat_buf.st_size : -1;
+}
+
 // Apply a custom category to all command-line options so that they are the
 // only ones displayed.
 static llvm::cl::OptionCategory MyToolCategory("qdtrans options");
@@ -1242,9 +1253,35 @@ static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
 static cl::extrahelp MoreHelp("\nUsage:\n\tqdtrans <single input file> [Clang options]\n\n");
 
 int main(int argc, const char **argv) {
-    int intorz = 73;
-    intptr ip = &intorz;
-    ip++;
+    // Ugly, ugly hack to fix an issue caused by the method used to inject new code in Clang (Clang runs off the end of its buffer at some point, injecting enough spaces at the end of the original file will hopefully give us the headroom we need.
+    char* earlyfullpath = realpath(argv[1], NULL);
+    std::string earlyname(earlyfullpath);
+    std::string earlyname2 = earlyname.substr(0,earlyname.rfind('.')) + ".noqd.bak";
+    std::stringstream cpcmd;
+    cpcmd << "cp " << earlyname << " " << earlyname2;
+    system(cpcmd.str().c_str());
+    long filesize = GetFileSize(argv[1]);
+    if(filesize == 0) {
+        std::cout << "Input file is empty!" << std::endl;
+        return 1;
+    }
+    //unsigned modsize = 0;
+    std::string earlyline;
+    std::vector<std::string> earlylines;
+    /*std::ifstream earlyin(earlyfullpath);
+    while (getline(earlyin,earlyline)) {
+        std::cout << earlyline;
+        earlylines.push_back(earlyline);
+    }
+    earlyin.close();*/
+    std::ofstream earlyout;
+    earlyout.open(earlyfullpath, std::ofstream::out | std::ofstream::app);
+    for(int i = 0; i < filesize; i += 500) {
+        earlyout << "                                                                                                                                                                                                                                                                                                                                                                                                                \n";
+        //modsize += 1;
+    }
+    earlyout.close();
+    free(earlyfullpath);
     // parse the command-line args passed to your code
     CommonOptionsParser op(argc, argv, MyToolCategory);
     // create a new Clang Tool instance (a LibTooling environment)
@@ -1302,11 +1339,11 @@ int main(int argc, const char **argv) {
         std::cout << r.toString() << "\n" << r.getFilePath().str() << std::endl;
         std::cout << "Offset: " << r.getOffset() << std::endl;
         r.apply(Rw);
-        myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
+        /*myFileBuffer = Rw.getRewriteBufferFor(sm.getOrCreateFileID(myFileEntry, clang::SrcMgr::C_User));
         llvm::outs() << "[BUFSTART:" << myFileBuffer->size() << "]\n";
         
         myFileBuffer->write(llvm::outs());
-        llvm::outs() << "[BUFEND]\n";
+        llvm::outs() << "[BUFEND]\n";*/
     }
     std::cout << "[REPSEND]\n";
     /*auto myFileBuffer = myFiles.getBufferForFile(filename);
