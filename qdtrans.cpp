@@ -70,6 +70,7 @@ struct criticalSection {
     bool typeA;
     clang::FunctionDecl* funcwlock;
     clang::FunctionDecl* funcwunlock;
+    bool transformed;
     unsigned start; // Only for debugging purposes
     unsigned end;   // Only for debugging purposes
 };
@@ -154,6 +155,7 @@ public:
                         (*newcrit)->stmtabovelock = stmt2;
                         (*newcrit)->typeA = true;
                         (*newcrit)->start = std::get<1>(FullSourceLoc(stmt->getLocStart(), TheContext->getSourceManager()).getDecomposedLoc());
+                        (*newcrit)->transformed = false;
                         PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                         PrintingPolicy& ppr = pp;
                         MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
@@ -793,6 +795,7 @@ public:
                     maprepv.push_back(funcrep2);
                     maprepv.push_back(deleterep);
                     maprepv.push_back(firstrep);
+                    crits[i]->transformed = true;
                     //std::cout << "Pushed to " << filename.str() << "." << std::endl;
                     (*RepMap)[filename.str()] = maprepv;
                 }
@@ -968,7 +971,7 @@ public:
             FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
             if(MyFunDecl != 0) {
                 std::string name = MyFunDecl->getNameInfo().getName().getAsString();
-                if(name == "pthread_mutex_init" || name == "pthread_mutex_destroy") {
+                if(name == "pthread_mutex_init" || name == "pthread_mutex_destroy" || name == "pthread_mutex_lock" || name == "pthread_mutex_unlock") {
                     std::string nodestring;
                     llvm::raw_string_ostream os(nodestring);
                     PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
@@ -976,30 +979,48 @@ public:
                     MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
                     std::string lname = os.str();
                     bool isQD = false;
+                    bool isTransformed;
                     for(unsigned c = 0; c < crits.size(); c++) {
                         if(lname.compare(crits[c]->lockname) == 0) {
                             isQD = true;
+                            isTransformed = crits[c]->transformed;
                             break;
                         }
                     }
-                    if(isQD == true) {
+                    bool push = false;
+                    if(/*isQD == */true) {
                         std::stringstream newnode;
-                        unsigned length;
+                        SourceManager& sm = TheContext->getSourceManager();
+                        unsigned length = sm.getFileOffset(FullSourceLoc(e->getSourceRange().getEnd(), sm))-sm.getFileOffset(FullSourceLoc(e->getSourceRange().getBegin(), sm));
+                        length += 3;
                         if(name == "pthread_mutex_init") {
                             newnode << "LL_initialize(" << lname << ");\n";
-                            length = 28+lname.length();
+                            //length = 28+lname.length();
+                            //length = 16+lname.length();
+                            push = true;
+                        } else if(name == "pthread_mutex_lock") {
+                            newnode << "LL_lock(" << lname << ");\n";
+                            //length = 0;
+                            push = !isTransformed;
+                        } else if(name == "pthread_mutex_unlock") {
+                            newnode << "LL_unlock(" << lname << ");\n";
+                            //length = 18+lname.length();
+                            push = !isTransformed;
                         } else {
                             //newnode << "LL_destroy(" << lname << ");\n";
                             newnode << ""; // Fix for weird issue, shouldn't matter since LL_destroy doesn't actually do anything.
-                            length = 25+lname.length();
+                            //length = 25+lname.length();
+                            //length = 19+lname.length();
+                            push = false;
                         }
                         //e->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                        SourceManager& sm = TheContext->getSourceManager();
-                        StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
-                        std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
-                        Replacement rep = createAdjustedReplacementForSR(e->getSourceRange(), TheContext, maprepv, newnode.str(), true, length);
-                        maprepv.push_back(rep);
-                        (*RepMap)[filename.str()] = maprepv;
+                        if(push == true) {
+                            StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
+                            std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
+                            Replacement rep = createAdjustedReplacementForSR(e->getSourceRange(), TheContext, maprepv, newnode.str(), true, length);
+                            maprepv.push_back(rep);
+                            (*RepMap)[filename.str()] = maprepv;
+                        }
                     }
                 }
             }
