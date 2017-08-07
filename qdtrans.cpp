@@ -182,10 +182,10 @@ public:
                             (*newcrit)->funcwunlock = fdecl;
                             //(*newcrit)->depth = depth-(*newcrit)->depth;
                             (*newcrit)->depth = 0-((*newcrit)->lockdepth-depth);
-                            if((*newcrit)->typeA == true) {
-                                if((*newcrit)->stmtabovelock != stmt2) {
-                                    (*newcrit)->typeA = false;
-                                }
+                            if((*newcrit)->stmtabovelock != stmt2) {
+                                (*newcrit)->typeA = false;
+                            } else {
+                                (*newcrit)->typeA = true;
                             }
                             (*newcrit)->end = std::get<1>(FullSourceLoc(stmt->getLocEnd(), TheContext->getSourceManager()).getDecomposedLoc());
                         }
@@ -724,7 +724,7 @@ public:
                             llvm::raw_string_ostream os(nodestring);
                             MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
                             std::string lname = os.str();
-                            if(lname.compare(crits[i]->lockname) == 0) {
+                            if(/*lname.compare(crits[i]->lockname) == 0*/true) {
                                 isUnlock = true;
                             } else {
                                 for(unsigned j = 0; j < crits.size(); j++) {
@@ -985,12 +985,21 @@ public:
                     //bool isQD = false;
                     bool isTransformed = false;
                     for(unsigned c = 0; c < crits.size(); c++) {
-                        if(lname.compare(crits[c]->lockname) == 0) {
-                            //isQD = true;
-                        }
-                        //printf("MyCallExpr: %lX, crits[%u]->lockstmt: %lX, crits[%u]->unlockstmt: %lX\n", MyCallExpr, c, crits[c]->lockstmt, c, crits[c]->unlockstmt);
+                        /*if(lname.compare(crits[c]->lockname) == 0) {
+                            isQD = true;
+                        }*/
+                        printf("MyCallExpr: %lX, crits[%u]->lockstmt: %lX, crits[%u]->unlockstmt: %lX\n", MyCallExpr, c, crits[c]->lockstmt, c, crits[c]->unlockstmt);
                         if((MyCallExpr == crits[c]->lockstmt || MyCallExpr == crits[c]->unlockstmt) && crits[c]->transformed == true) {
                             isTransformed = true;
+                        } else if(crits[c]->transformed == true) {
+                            SourceManager& sm = TheContext->getSourceManager();
+                            unsigned lockoffset = sm.getFileOffset(FullSourceLoc(sm.getFileLoc(crits[c]->lockstmt->getSourceRange().getBegin()), sm));
+                            unsigned unlockoffset = sm.getFileOffset(FullSourceLoc(sm.getFileLoc(crits[c]->unlockstmt->getSourceRange().getBegin()), sm));
+                            unsigned calloffset = sm.getFileOffset(FullSourceLoc(sm.getFileLoc(MyCallExpr->getSourceRange().getBegin()), sm));
+                            printf("%u >= %u && %u <= %u\n", calloffset, lockoffset, calloffset, unlockoffset);
+                            if(calloffset >= lockoffset && calloffset <= unlockoffset) { // NOTE: These conditions would be unsufficient to detect whether a call is located inside a transformed type C critical section or not, but this is okay for now since QDTrans doesn't currently transform any type C critical sections.
+                                isTransformed = true;
+                            }
                         }
                     }
                     bool push = false;
