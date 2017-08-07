@@ -22,4 +22,3 @@ int main() {
     pthread_mutex_unlock(&lock);
     pthread_mutex_destroy(&lock);
 }
-                                                                                                                                                                                                                                                                                                                                                                                                                

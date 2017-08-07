@@ -149,8 +149,7 @@ public:
                         (*newcrit)->lockstmt = stmt;
                         (*newcrit)->unlockstmt = NULL;
                         (*newcrit)->funcwlock = fdecl;
-                        (*newcrit)->lockdepth = depth-fdepth;
-                        (*newcrit)->depth = depth;
+                        (*newcrit)->lockdepth = depth;
                         (*newcrit)->needsWait = false;
                         (*newcrit)->stmtabovelock = stmt2;
                         (*newcrit)->typeA = true;
@@ -181,7 +180,8 @@ public:
                         if(lname.compare((*newcrit)->lockname) == 0) {
                             (*newcrit)->unlockstmt = stmt;
                             (*newcrit)->funcwunlock = fdecl;
-                            (*newcrit)->depth = depth-(*newcrit)->depth;
+                            //(*newcrit)->depth = depth-(*newcrit)->depth;
+                            (*newcrit)->depth = 0-((*newcrit)->lockdepth-depth);
                             if((*newcrit)->typeA == true) {
                                 if((*newcrit)->stmtabovelock != stmt2) {
                                     (*newcrit)->typeA = false;
@@ -208,7 +208,7 @@ public:
         }
     }
     
-    void checkStatements(Stmt* stmt, struct criticalSection** newcrit, bool* inCrit, bool* needspush, bool* skip, unsigned depth, llvm::raw_string_ostream& os, std::string& nodestring, std::stringstream& nodetext, std::vector<FunctionDecl*>* fstack) {
+    void checkStatements(Stmt* stmt, struct criticalSection** newcrit, bool* inCrit, bool* needspush, bool* skip, unsigned depth, llvm::raw_string_ostream& os, std::string& nodestring, std::stringstream& nodetext, std::vector<FunctionDecl*>* fstack, std::vector<unsigned>* dstack) {
         //std::cout << "Depth: " << depth << ", type: " << stmt->getStmtClassName() << ", inCrit: " << *inCrit << " inside function '" << (*fstack)[fstack->size()-1]->getNameInfo().getAsString() << "'." << std::endl;
         if(isa<CallExpr>(stmt)) {
             CallExpr* cx = cast<CallExpr>(stmt);
@@ -228,9 +228,12 @@ public:
                     }
                 }
                 if(match == false) {
+                    dstack->push_back(depth);
                     fstack->push_back(fdecl);
-                    checkStatements(fdecl->getBody(), newcrit, inCrit, needspush, skip, depth+1, os, nodestring, nodetext, fstack);
+                    checkStatements(fdecl->getBody(), newcrit, inCrit, needspush, skip, 0, os, nodestring, nodetext, fstack, dstack);
                     fstack->pop_back();
+                    depth = dstack->back();
+                    dstack->pop_back();
                 }
             }
         }
@@ -241,7 +244,7 @@ public:
             }
             if(*skip == false) {
                 if(*ChildIterator != NULL) {
-                    checkStatements(*ChildIterator, newcrit, inCrit, needspush, skip, depth+1, os, nodestring, nodetext, fstack);
+                    checkStatements(*ChildIterator, newcrit, inCrit, needspush, skip, depth+1, os, nodestring, nodetext, fstack, dstack);
                 }
                 ChildIterator++;
             } else {
@@ -264,6 +267,7 @@ public:
             struct criticalSection* newcrit = NULL;
             bool needspush = false;
             std::vector<FunctionDecl*> fstack;
+            std::vector<unsigned> dstack;
             while(DeclIterator != tud->decls_end()) {
                 if(isa<FunctionDecl>(*DeclIterator)) {
                     //std::cout << "Func: " << i << std::endl;
@@ -273,7 +277,7 @@ public:
                     if(funcbody != NULL) {
                         std::string fname = funcdecl->getNameInfo().getAsString();
                         fstack.push_back(funcdecl);
-                        checkStatements(funcbody, &newcrit, &inCrit, &needspush, &skip, 0, os, nodestring, nodetext, &fstack);
+                        checkStatements(funcbody, &newcrit, &inCrit, &needspush, &skip, 0, os, nodestring, nodetext, &fstack, &dstack);
                         //std::cout << "Checking needspush (is " << needspush << ")..." << std::endl;
                         if(needspush == true) {
                             crits.push_back(newcrit);
@@ -978,13 +982,15 @@ public:
                     PrintingPolicy& ppr = pp;
                     MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
                     std::string lname = os.str();
-                    bool isQD = false;
-                    bool isTransformed;
+                    //bool isQD = false;
+                    bool isTransformed = false;
                     for(unsigned c = 0; c < crits.size(); c++) {
                         if(lname.compare(crits[c]->lockname) == 0) {
-                            isQD = true;
-                            isTransformed = crits[c]->transformed;
-                            break;
+                            //isQD = true;
+                        }
+                        //printf("MyCallExpr: %lX, crits[%u]->lockstmt: %lX, crits[%u]->unlockstmt: %lX\n", MyCallExpr, c, crits[c]->lockstmt, c, crits[c]->unlockstmt);
+                        if((MyCallExpr == crits[c]->lockstmt || MyCallExpr == crits[c]->unlockstmt) && crits[c]->transformed == true) {
+                            isTransformed = true;
                         }
                     }
                     bool push = false;
@@ -1160,7 +1166,7 @@ Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContex
     FullSourceLoc fslstart = FullSourceLoc(sm.getFileLoc(sr.getBegin()), sm);
     FullSourceLoc fslend = FullSourceLoc(sm.getFileLoc(sr.getEnd()), sm);
     //FullSourceLoc gslstart = FullSourceLoc(sm.translateFileLineCol(sm.getFileEntryForID(sm.getMainFileID()), fslstart.getLine(), unsigned Col));
-    std::cerr << "\nDump:\n";
+    //std::cerr << "\nDump:\n";
     unsigned start = sm.getFileOffset(fslstart);
     /*std::string string = sm.getFileEntryForID(sm.getFileID(fslstart))->getName().str();
     std::cout << "Text: " << text << std::endl;
@@ -1380,7 +1386,7 @@ int main(int argc, const char **argv) {
     std::string cmdcppstr;
     std::stringstream cmd(cmdcppstr);
     cmd << "cp " << filename << " " << filename2;
-    system(cmd.str().c_str());
+    //system(cmdcppstr.str().c_str());
     std::cout << "Saving to " << filename << " (original code backed up to "<< filename2 << ")...\n" << std::endl;
     //std::cout << "Filename: " << filename << "." << std::endl;
     std::cout << "Critical sections counted: " << critcount << std::endl;
