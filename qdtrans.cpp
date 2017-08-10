@@ -71,6 +71,9 @@ struct criticalSection {
     clang::FunctionDecl* funcwlock;
     clang::FunctionDecl* funcwunlock;
     bool transformed;
+    std::vector<clang::Stmt*>* unlockstmts;
+    std::vector<clang::Stmt*>* returnstmts;
+    char type; // Can be 'U' = undefined, 'A' = type A, 'B' = type B, 'C' = type C.
     unsigned start; // Only for debugging purposes
     unsigned end;   // Only for debugging purposes
 };
@@ -88,11 +91,11 @@ std::vector<struct criticalSection*> crits;
 
 Stmt* thestmt;
 
-unsigned critcount = 0;
+/*unsigned critcount = 0;
 unsigned transformed = 0;
 unsigned acrits = 0;
 unsigned bcrits = 0;
-unsigned ccrits = 0;
+unsigned ccrits = 0;*/
 
 Replacement createAdjustedReplacementForSR(SourceRange sr, ASTContext* TheContext, std::vector<Replacement>& repv, std::string text, bool injection, int newlength);
 
@@ -138,7 +141,8 @@ public:
                 if(MyFunDecl != 0) {
                     std::string name = MyFunDecl->getNameInfo().getName().getAsString();
                     if(name == "pthread_mutex_lock") {
-                        //std::cout << "Found!" << std::endl;
+                        //critcount++;
+                        std::cout << "Found!" << std::endl;
                         *inCrit = true;
                         *needspush = true;
                         //std::cout << "Setting needspush (is " << *needspush << ", could be " << needspush << ")..." << std::endl;
@@ -146,6 +150,8 @@ public:
                         nodestring = "";
                         (*newcrit) = new criticalSection;
                         (*newcrit)->accessedvars = (new std::vector<struct variable*>);
+                        (*newcrit)->unlockstmts = (new std::vector<Stmt*>);
+                        (*newcrit)->returnstmts = (new std::vector<Stmt*>);
                         (*newcrit)->lockstmt = stmt;
                         (*newcrit)->unlockstmt = NULL;
                         (*newcrit)->funcwlock = fdecl;
@@ -153,6 +159,7 @@ public:
                         (*newcrit)->needsWait = false;
                         (*newcrit)->stmtabovelock = stmt2;
                         (*newcrit)->typeA = true;
+                        (*newcrit)->type = 'U';
                         (*newcrit)->start = std::get<1>(FullSourceLoc(stmt->getLocStart(), TheContext->getSourceManager()).getDecomposedLoc());
                         (*newcrit)->transformed = false;
                         PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
@@ -171,6 +178,7 @@ public:
                 if(MyFunDecl != 0) {
                     std::string name = MyFunDecl->getNameInfo().getName().getAsString();
                     if(name == "pthread_mutex_unlock") {
+                        (*newcrit)->unlockstmts->push_back(stmt);
                         PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                         PrintingPolicy& ppr = pp;
                         nodestring = "";
@@ -193,7 +201,7 @@ public:
                         if((*newcrit)->unlockstmt != NULL) {
                             crits.push_back((*newcrit));
                             //std::cout << "169 pushed " << (*newcrit) << "." << std::endl;
-                            critcount++;
+                            //critcount++;
                         } else {
                             delete (*newcrit);
                         }
@@ -204,7 +212,9 @@ public:
                         *skip = true;
                     }
                 } 
-            } 
+            } else if(isa<ReturnStmt>(stmt)) {
+                (*newcrit)->returnstmts->push_back(stmt);
+            }
         }
     }
     
@@ -282,7 +292,7 @@ public:
                         if(needspush == true) {
                             crits.push_back(newcrit);
                             //std::cout << "255 Pushed " << newcrit << "." << std::endl;
-                            critcount++;
+                            //critcount++;
                             needspush = false;
                             inCrit = false;
                         }
@@ -581,6 +591,9 @@ public:
             std::stringstream pnodetext;
             std::string lfname = crits[i]->funcwlock->getNameInfo().getAsString();
             pnodetext << "struct " << lfname << "_critSec" << i << "_msg;\n";
+            if(i == 0) {
+                pnodetext << "\n";
+            }
             nodetext << "struct " << lfname << "_critSec" << i << "_msg {\n";
             unsigned varcount = 0;
             for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
@@ -596,27 +609,29 @@ public:
                     SourceManager& sm = TheContext->getSourceManager();
                     StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
                     std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
-                    std::cout << "Function " << crits[i]->funcwlock->getNameInfo().getAsString() << " goes from " << crits[i]->funcwlock->getSourceRange().getBegin().printToString(sm) << " to " << crits[i]->funcwlock->getSourceRange().getEnd().printToString(sm) << ".\n";
+                    //std::cout << "Function " << crits[i]->funcwlock->getNameInfo().getAsString() << " goes from " << crits[i]->funcwlock->getSourceRange().getBegin().printToString(sm) << " to " << crits[i]->funcwlock->getSourceRange().getEnd().printToString(sm) << ".\n";
                     SourceRange bodysr = crits[i]->funcwlock->getBody()->getSourceRange();
                     SourceLocation addsl = sm.translateFileLineCol(sm.getFileEntryForID(sm.getMainFileID()), FullSourceLoc(bodysr.getBegin(), sm).getExpansionLineNumber()-1, 1);
                     Replacement rep = createAdjustedReplacementForSR(SourceRange(addsl, addsl), TheContext, maprepv, nodetext.str(), true, 0);
                         //createInjectedReplacementForSR(crits[i]->funcwlock->getSourceRange(), TheContext, maprepv, nodetext.str());
                     Replacement rep2 = createAdjustedReplacementForSR(SRToAddProtosTo, TheContext, maprepv, pnodetext.str(), true, 0);
-                    maprepv.push_back(rep2);
-                    maprepv.push_back(rep);
+                    if(crits[i]->returnstmts->empty() == true) {
+                        maprepv.push_back(rep2);
+                        maprepv.push_back(rep);
+                    }
                     (*RepMap)[filename.str()] = maprepv;
                 } else {
                     crits[i]->noMsgStruct = true;
                 }
             } else {
                 if(varcount > 0 || addEmptyStructs == true) {
-                    std::cout << "Critical section " << i << " has a message struct." << std::endl;
+                    //std::cout << "Critical section " << i << " has a message struct." << std::endl;
                     crits[i]->noMsgStruct = false;
-                    std::cout << "noMsgStruct: " << crits[i]->noMsgStruct << std::endl;
+                    //std::cout << "noMsgStruct: " << crits[i]->noMsgStruct << std::endl;
                 } else {
-                    std::cout << "Critical section " << i << " has no message struct." << std::endl;
+                    //std::cout << "Critical section " << i << " has no message struct." << std::endl;
                     crits[i]->noMsgStruct = true;
-                    std::cout << "noMsgStruct: " << crits[i]->noMsgStruct << std::endl;
+                    //std::cout << "noMsgStruct: " << crits[i]->noMsgStruct << std::endl;
                 }
             }
         }
@@ -650,7 +665,10 @@ public:
                     }
                 }
             }
-            functext2 << "void " << lfname << "_critSec" << i << "(unsigned int sz, void* msgP);\n\n";
+            functext2 << "void " << lfname << "_critSec" << i << "(unsigned int sz, void* msgP);\n";
+            if(i == 0) {
+                functext2 << "\n";
+            }
             functext << "void " << lfname << "_critSec" << i << "(unsigned int sz, void* msgP) {\n";
             if(crits[i]->noMsgStruct == false) {
                 functext << "    struct " << lfname << "_critSec" << i << "_msg* " << lfname << "_cs" << i << "msg = (struct " << lfname << "_critSec" << i << "_msg*)msgP;\n";
@@ -695,14 +713,21 @@ public:
             nodetext << "    ";
             bool first = true;
             //std::cout << "Checking..." << std::endl;
+            //unsigned startoffset = 0;
+            //unsigned headerlength = 0;
+            //unsigned headerlength = functext.str().length();
+            //std::cout << "headerlength: " << headerlength << std::endl;
+            //std::cout << "functext.str(): \n" << functext.str() << std::endl;
+            //std::cout << "headerlength: " << headerlength << std::endl;
             if(crits[i]->depth == 0 && crits[i]->typeA == true) {
+                crits[i]->type = 'A';
                 topBody = crits[i]->stmtabovelock;
                 topIterator = topBody->child_begin();
                 currBody = topBody;
                 currIterator = topIterator;
                 //std::cout << "Checked, case 1." << std::endl;
-                transformed++;
-                acrits++;
+                //transformed++;
+                //acrits++;
                 unsigned bodystartpos;
                 unsigned bodyendpos;
                 // Flat case
@@ -713,40 +738,20 @@ public:
                 topIterator++;
                 stmtafterlock = *topIterator;
                 while(*topIterator != crits[i]->unlockstmt) {
-                    bool isUnlock = false;
-                    if(isa<CallExpr>(*topIterator)) {
-                        CallExpr* MyCallExpr = cast<CallExpr>(*topIterator);
-                        std::string name = MyCallExpr->getDirectCallee()->getNameInfo().getName().getAsString();
-                        if(name == "pthread_mutex_unlock") {
-                            PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
-                            PrintingPolicy& ppr = pp;
-                            std::string nodestring;
-                            llvm::raw_string_ostream os(nodestring);
-                            MyCallExpr->getArg(0)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                            std::string lname = os.str();
-                            if(/*lname.compare(crits[i]->lockname) == 0*/true) {
-                                isUnlock = true;
-                            } else {
-                                for(unsigned j = 0; j < crits.size(); j++) {
-                                    for(unsigned v = 0; v < crits[j]->accessedvars->size(); v++) {
-                                        if((*(crits[j]->accessedvars))[v]->typestr.compare("pthread_mutex_t") == 0) {
-                                            if(lname.compare((*(crits[j]->accessedvars))[v]->namestr) == 0) {
-                                                isUnlock = true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    /*if(startoffset == 0) {
+                        startoffset = sm.getFileOffset(FullSourceLoc(sm.getFileLoc((*topIterator)->getSourceRange().getBegin()), sm));
+                        std::cout << "startoffset: " << startoffset << std::endl;
+                    }*/
+                    //(*topIterator)->dump();
+                    //bool isUnlock = false;
                     std::string nodestring;
                     PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                     PrintingPolicy& ppr = pp;
                     llvm::raw_string_ostream os(nodestring);
                     (*topIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
-                    if(isUnlock == false) {
+                    //if(isUnlock == false) {
                         functext << "    " << os.str() << ";\n";
-                    }
+                    //}
                     SourceRange locksr = crits[i]->lockstmt->getSourceRange();
                     std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
                     if(first == false) {
@@ -769,9 +774,9 @@ public:
                     iternum++;
                 }
                 if(topIterator == topBody->child_end()) {
-                    transformed--;
-                    critcount--;
-                    acrits--;
+                    //transformed--;
+                    //critcount--;
+                    //acrits--;
                 } else {
                     if(crits[i]->noMsgStruct == false) {
                         for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
@@ -791,20 +796,46 @@ public:
                 
                     functext << "}\n\n";
                     //Replacement funcrep = createEndReplacement(TheContext, maprepv, functext.str());
+                    std::string funcrepstr = functext.str();
+                    std::string::size_type offset = funcrepstr.find("pthread_mutex_", 0);
+                    unsigned j = 0;
+                    while(offset != std::string::npos && j < crits[i]->unlockstmts->size()) {           
+                        std::cout << "offset: " << offset << std::endl;
+                        std::cout << funcrepstr.substr(offset, strlen("pthread_mutex_")) << std::endl;
+                        std::string nodestr2;
+                        llvm::raw_string_ostream os2(nodestr2);
+                        CallExpr* MyCallExpr = cast<CallExpr>(crits[i]->unlockstmts->at(j));
+                        FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
+                        PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                        PrintingPolicy& ppr = pp;
+                        MyCallExpr->getArg(0)->printPretty(os2, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                        std::string lname = os2.str();
+                        //std::cout << "Comparing \"" << lname << "\" and \"" << (*newcrit)->lockname << "\"." << std::endl;
+                        if(lname.compare(crits[i]->lockname) == 0) {
+                            funcrepstr.replace(offset, strlen("pthread_mutex_unlock(")+lname.length()+strlen(");\n"), "");
+                        } else {
+                            funcrepstr.replace(offset, strlen("pthread_mutex_"), "LL_");
+                        }
+                        j++;
+                        offset = funcrepstr.find("pthread_mutex_", offset);
+                    }
                     SourceRange bodysr = crits[i]->funcwlock->getBody()->getSourceRange();
                     SourceLocation addsl = sm.translateFileLineCol(sm.getFileEntryForID(sm.getMainFileID()), FullSourceLoc(bodysr.getBegin(), sm).getExpansionLineNumber()-1, 1);
-                    Replacement funcrep = createAdjustedReplacementForSR(SourceRange(addsl, addsl), TheContext, maprepv, functext.str(), true, 0);
+                    Replacement funcrep = createAdjustedReplacementForSR(SourceRange(addsl, addsl), TheContext, maprepv, funcrepstr, true, 0);
                     Replacement funcrep2 = createAdjustedReplacementForSR(SRToAddProtosTo, TheContext, maprepv, functext2.str(), true, 0);
-                    maprepv.push_back(funcrep);
-                    maprepv.push_back(funcrep2);
-                    maprepv.push_back(deleterep);
-                    maprepv.push_back(firstrep);
-                    crits[i]->transformed = true;
-                    //std::cout << "Pushed to " << filename.str() << "." << std::endl;
+                    if(crits[i]->returnstmts->empty() == true) {
+                        maprepv.push_back(funcrep);
+                        maprepv.push_back(funcrep2);
+                        maprepv.push_back(deleterep);
+                        maprepv.push_back(firstrep);
+                        crits[i]->transformed = true;
+                        //std::cout << "Pushed to " << filename.str() << "." << std::endl;
+                    }
                     (*RepMap)[filename.str()] = maprepv;
                 }
             } else if(crits[i]->funcwlock == crits[i]->funcwunlock) { // For counting mechanism
-                bcrits++;
+                //bcrits++;
+                crits[i]->type = 'B';
             } else if(crits[i]->funcwlock == crits[i]->funcwunlock && false == true) { // WIP code disabled.
                 if(crits[i]->lockdepth < 0) {
                     while(lstack.empty() == false || topIterator != topBody->child_end()) {
@@ -950,7 +981,8 @@ public:
                 }
                 // Same function case
             } else {
-                ccrits++;
+                crits[i]->type = 'C';
+                //ccrits++;
                 // Different function case
             }
             SourceManager& sm = TheContext->getSourceManager();
@@ -1266,6 +1298,8 @@ void deleteCrits() {
             delete crits[c]->accessedvars->at(i);
         }
         delete crits[c]->accessedvars;
+        delete crits[c]->unlockstmts;
+        delete crits[c]->returnstmts;
         delete crits[c];
     }
 }
@@ -1398,6 +1432,30 @@ int main(int argc, const char **argv) {
     //system(cmdcppstr.str().c_str());
     std::cout << "Saving to " << filename << " (original code backed up to "<< filename2 << ")...\n" << std::endl;
     //std::cout << "Filename: " << filename << "." << std::endl;
+    unsigned critcount = 0;
+    unsigned transformed = 0;
+    unsigned acrits = 0;
+    unsigned bcrits = 0;
+    unsigned ccrits = 0;
+    for(unsigned i = 0; i < crits.size(); i++) {
+        critcount++;
+        if(crits[i]->transformed == true) {
+            transformed++;
+        }
+        switch(crits[i]->type) {
+        case 'A':
+            acrits++;
+            break;
+        case 'B':
+            bcrits++;
+            break;
+        case 'C':
+            ccrits++;
+            break;
+        default:
+            std::cout << "Invalid crit type detected, please debug and fix this." << std::endl;
+        };
+    }
     std::cout << "Critical sections counted: " << critcount << std::endl;
     std::cout << "Successfully transformed: " << transformed << std::endl;
     std::cout << "Type A: " << acrits << std::endl;
