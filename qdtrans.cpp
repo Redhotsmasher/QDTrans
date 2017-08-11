@@ -73,6 +73,7 @@ struct criticalSection {
     bool transformed;
     std::vector<clang::Stmt*>* unlockstmts;
     std::vector<clang::Stmt*>* returnstmts;
+    bool simplereturns;
     char type; // Can be 'U' = undefined, 'A' = type A, 'B' = type B, 'C' = type C.
     unsigned start; // Only for debugging purposes
     unsigned end;   // Only for debugging purposes
@@ -109,7 +110,7 @@ bool isSRLessThan(SourceRange sr1, SourceRange sr2, ASTContext* TheContext);
 /* Returns true if sr1 is contained completely inside sr2, false otherwise */
 bool isSRInside(SourceRange sr1, SourceRange sr2, ASTContext* TheContext);
 
-void printCrits();
+void printCrits(ASTContext* TheContext);
 
 // By implementing RecursiveASTVisitor, we can specify which AST nodes
 // we're interested in by overriding relevant methods.
@@ -142,7 +143,7 @@ public:
                     std::string name = MyFunDecl->getNameInfo().getName().getAsString();
                     if(name == "pthread_mutex_lock") {
                         //critcount++;
-                        std::cout << "Found!" << std::endl;
+                        //std::cout << "Found!" << std::endl;
                         *inCrit = true;
                         *needspush = true;
                         //std::cout << "Setting needspush (is " << *needspush << ", could be " << needspush << ")..." << std::endl;
@@ -306,7 +307,7 @@ public:
         return true;
     }
 
-    void fixCrits() { // Crude fix for crits sometimes having invalid (NULL) unlock statements because pushing to repvec is flaky. Also removes duplicate crits.
+    void fixCrits(ASTContext* TheContext) { // Crude fix for crits sometimes having invalid (NULL) unlock statements because pushing to repvec is flaky. Also removes duplicate crits. Also removes return statements which are actually outside the critical section but were detected as inside due to quirky crit detection.
         std::vector<struct criticalSection*>::iterator criterator = crits.begin();
         unsigned num = 0;
         bool erased = false;
@@ -336,6 +337,8 @@ public:
         while(criterator != crits.end()) {
             std::cout << *criterator << " with lockstmt " << (*criterator)->lockstmt << std::endl;
             if((*criterator)->unlockstmt == NULL) {
+                delete (*criterator)->unlockstmts;
+                delete (*criterator)->returnstmts;
                 delete *criterator;
                 crits.erase(criterator);
                 criterator = crits.begin();
@@ -353,7 +356,7 @@ public:
                         criterator = crits.begin();
                         num = 0;
                         std::cout << "crits.size() == " << crits.size() << "." << std::endl;
-                    }
+                    } 
                 }
             }
             if(erased == false) {
@@ -362,6 +365,30 @@ public:
                 erased = false;
             }
             num++;
+        }
+        erased = false;
+        for(unsigned i = 0; i < crits.size(); i++) {
+            if(crits[i]->returnstmts->empty() == false) {
+                std::vector<clang::Stmt*>::iterator riterator = crits[i]->returnstmts->begin();
+                SourceRange lockrange = crits[i]->lockstmt->getSourceRange();
+                SourceRange unlockrange = crits[i]->unlockstmt->getSourceRange();
+                while(riterator != crits[i]->returnstmts->end()) {
+                    //printf("End: %lX\n", crits[i]->returnstmts->end());
+                    if((*riterator) != NULL) {
+                        //printf("%lX\n", (*riterator));
+                        SourceRange returnrange = (*riterator)->getSourceRange();
+                        if(isSRLessThan(unlockrange, returnrange, TheContext) == true || isSRLessThan(returnrange, lockrange, TheContext) == true) {
+                            crits[i]->returnstmts->erase(riterator);
+                            erased = true;
+                        }
+                    }
+                    if(erased == false) {
+                        riterator++;
+                    } else {
+                        erased = false;
+                    }
+                }
+            }
         }
     }
 };
@@ -602,6 +629,11 @@ public:
                     varcount++;
                 }
             }
+            if(crits[i]->returnstmts->empty() == false) {
+                if(crits[i]->simplereturns == true) {
+                    nodetext << "    " << crits[i]->funcwunlock->getReturnType().getLocalUnqualifiedType().getAsString() << " __retval__;\n    int __earlyReturn__;\n";
+                } 
+            }
             nodetext << "};\n\n";
             if(addStructs == true) {
                 if(varcount > 0 || addEmptyStructs == true) {
@@ -613,9 +645,9 @@ public:
                     SourceRange bodysr = crits[i]->funcwlock->getBody()->getSourceRange();
                     SourceLocation addsl = sm.translateFileLineCol(sm.getFileEntryForID(sm.getMainFileID()), FullSourceLoc(bodysr.getBegin(), sm).getExpansionLineNumber()-1, 1);
                     Replacement rep = createAdjustedReplacementForSR(SourceRange(addsl, addsl), TheContext, maprepv, nodetext.str(), true, 0);
-                        //createInjectedReplacementForSR(crits[i]->funcwlock->getSourceRange(), TheContext, maprepv, nodetext.str());
+                    //createInjectedReplacementForSR(crits[i]->funcwlock->getSourceRange(), TheContext, maprepv, nodetext.str());
                     Replacement rep2 = createAdjustedReplacementForSR(SRToAddProtosTo, TheContext, maprepv, pnodetext.str(), true, 0);
-                    if(crits[i]->returnstmts->empty() == true) {
+                    if(crits[i]->returnstmts->empty() == true || crits[i]->simplereturns == true) {
                         maprepv.push_back(rep2);
                         maprepv.push_back(rep);
                     }
@@ -654,6 +686,25 @@ public:
             Replacement firstrep;
             std::string structname;
             std::string lfname = crits[i]->funcwlock->getNameInfo().getAsString();
+            if(crits[i]->returnstmts->empty() == false) {
+                crits[i]->simplereturns = true;
+                for(unsigned j = 0; j < crits[i]->returnstmts->size(); j++) {
+                    if(cast<ReturnStmt>(crits[i]->returnstmts->at(j))->getRetValue() != NULL) {
+                        //std::cout << cast<ReturnStmt>(crits[i]->returnstmts->at(j))->getRetValue()->getType().getLocalUnqualifiedType().getAsString() << " == " << crits[i]->funcwunlock->getReturnType().getLocalUnqualifiedType().getAsString() << std::endl;
+                        if(cast<ReturnStmt>(crits[i]->returnstmts->at(j))->getRetValue()->getType().getLocalUnqualifiedType() == crits[i]->funcwunlock->getReturnType().getLocalUnqualifiedType()) {
+                                
+                        } else {
+                            crits[i]->simplereturns = false;
+                        }
+                    }
+                }
+                /*std::cout << "simplereturns: ";
+                if(crits[i]->simplereturns == true) {
+                    std::cout << "true" << std::endl;
+                } else {
+                    std::cout << "false" << std::endl;
+                }*/
+            }
             if(crits[i]->noMsgStruct == false) {
                 std::stringstream sns;
                 sns << lfname << "_cs" << i << "msg";
@@ -675,6 +726,11 @@ public:
                 for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                     if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL) {
                         functext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = " << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                    }
+                }
+                if(crits[i]->returnstmts->empty() == false) {
+                    if(crits[i]->simplereturns == true) {
+                        functext << "    " << lfname << "_cs" << i << "msg->__retval__ = NULL;\n    " << lfname << "_cs" << i << "msg->__earlyReturn__ = 0;\n";
                     }
                 }
             }
@@ -707,6 +763,11 @@ public:
                         nodetext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = " << lfname << "_cs" << i << "msg." << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                     }
                 }
+                if(crits[i]->returnstmts->empty() == false) {
+                    if(crits[i]->simplereturns == true) {
+                        nodetext << "\n    if(" << lfname << "_cs" << i << "msg.__earlyReturn__ != 0) {\n        return " << lfname << "_cs" << i << "msg.__retval__;\n    }\n\n";
+                    } 
+                }   
             } else {
                 nodetext << ", 0, NULL);\n";
             }
@@ -805,7 +866,7 @@ public:
                         std::string nodestr2;
                         llvm::raw_string_ostream os2(nodestr2);
                         CallExpr* MyCallExpr = cast<CallExpr>(crits[i]->unlockstmts->at(j));
-                        FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
+                        //FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
                         PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                         PrintingPolicy& ppr = pp;
                         MyCallExpr->getArg(0)->printPretty(os2, (PrinterHelper*)NULL, ppr, (unsigned)4);
@@ -819,11 +880,42 @@ public:
                         j++;
                         offset = funcrepstr.find("pthread_mutex_", offset);
                     }
+                    if(crits[i]->returnstmts->empty() == false) {
+                        offset = funcrepstr.find("return ", 0);
+                        //std::cout << "roffset1: " << offset;
+                        j = 0;
+                        while(offset != std::string::npos && j < crits[i]->returnstmts->size()) {
+                            //std::cout << "roffset: " << offset;
+                            long replength = 0;
+                            if(cast<ReturnStmt>(crits[i]->returnstmts->at(j))->getRetValue() != NULL) {
+                                if(cast<ReturnStmt>(crits[i]->returnstmts->at(j))->getRetValue()->getType().getLocalUnqualifiedType() == crits[i]->funcwunlock->getReturnType().getLocalUnqualifiedType()) {
+                                    unsigned length = sm.getFileOffset(FullSourceLoc(sm.getFileLoc(crits[i]->returnstmts->at(j)->getSourceRange().getEnd()), sm))-sm.getFileOffset(FullSourceLoc(sm.getFileLoc(crits[i]->returnstmts->at(j)->getSourceRange().getBegin()), sm))+2;
+                                    std::string nodestr2;
+                                    llvm::raw_string_ostream os2(nodestr2);
+                                    //FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
+                                    PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+                                    PrintingPolicy& ppr = pp;
+                                    cast<ReturnStmt>(crits[i]->returnstmts->at(j))->getRetValue()->printPretty(os2, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                                    std::stringstream reptext;
+                                    reptext << "    " << structname << "->__retval__ = " << os2.str() << ";\n    " << structname << "->__earlyReturn__ = 1;\n    return;\n";
+                                    funcrepstr.replace(offset, length, reptext.str());
+                                    replength = reptext.str().length();
+                                    //std::cout << "Postrep: " << funcrepstr.substr(offset+replength, funcrepstr.length()) << std::endl;
+                                } else {
+                                    std::cout << "Complicated return detected." << std::endl;
+                                }
+                            } else {
+                                std::cout << "NULL return detected, i = " << i << ", j = " << j << "." << std::endl;
+                            }
+                            j++;
+                            offset = funcrepstr.find("return ", offset+replength);
+                        }
+                    }
                     SourceRange bodysr = crits[i]->funcwlock->getBody()->getSourceRange();
                     SourceLocation addsl = sm.translateFileLineCol(sm.getFileEntryForID(sm.getMainFileID()), FullSourceLoc(bodysr.getBegin(), sm).getExpansionLineNumber()-1, 1);
                     Replacement funcrep = createAdjustedReplacementForSR(SourceRange(addsl, addsl), TheContext, maprepv, funcrepstr, true, 0);
                     Replacement funcrep2 = createAdjustedReplacementForSR(SRToAddProtosTo, TheContext, maprepv, functext2.str(), true, 0);
-                    if(crits[i]->returnstmts->empty() == true) {
+                    if(crits[i]->returnstmts->empty() == true || crits[i]->simplereturns == true) {
                         maprepv.push_back(funcrep);
                         maprepv.push_back(funcrep2);
                         maprepv.push_back(deleterep);
@@ -1020,7 +1112,7 @@ public:
                         /*if(lname.compare(crits[c]->lockname) == 0) {
                             isQD = true;
                         }*/
-                        printf("MyCallExpr: %lX, crits[%u]->lockstmt: %lX, crits[%u]->unlockstmt: %lX\n", MyCallExpr, c, crits[c]->lockstmt, c, crits[c]->unlockstmt);
+                        //printf("MyCallExpr: %lX, crits[%u]->lockstmt: %lX, crits[%u]->unlockstmt: %lX\n", MyCallExpr, c, crits[c]->lockstmt, c, crits[c]->unlockstmt);
                         if((MyCallExpr == crits[c]->lockstmt || MyCallExpr == crits[c]->unlockstmt) && crits[c]->transformed == true) {
                             isTransformed = true;
                         } else if(crits[c]->transformed == true) {
@@ -1134,18 +1226,19 @@ public:
         // will visit all nodes in the AST.
         FindingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
         if(crits.empty() == false) {
-            FindingVisitor.fixCrits();
+            FindingVisitor.fixCrits(&Context);
         }
         std::cout << "Done finding.\n" << std::endl;
         ScanningVisitor.TraverseDecl(Context.getTranslationUnitDecl());
         std::cout << "Done scanning.\n" << std::endl;
         ModifyingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
         ModifyingVisitor.AddStructs(false, false);
-        printCrits();
+        //printCrits(&Context);
         ModifyingVisitor.TransformFunctions();
+        printCrits(&Context);
         ModifyingVisitor.AddStructs(false, true);
         FinalizingVisitor.TraverseDecl(Context.getTranslationUnitDecl());
-        //printCrits();
+        //printCrits(&Context);
     }
 
 private:
@@ -1249,7 +1342,7 @@ Replacement createInjectedReplacementForSR(SourceRange sr, ASTContext* TheContex
     return newReplacement;
 }*/
 
-void printCrits() {
+void printCrits(ASTContext* TheContext) {
     std::cout << "[CRITSSTART]\n" << std::endl;
     struct criticalSection* c;
     for(unsigned i = 0; i < crits.size(); i++) {
@@ -1284,6 +1377,17 @@ void printCrits() {
                 needsret = "False";
             }
             std::cout << "    " << v->typestr << " " << v->namestr << " of locality '" << v->locality << "'.\n        threadLocal: " << tloc << ", pointer: " << ptr << ", needsReturn: " << needsret << "." << std::endl;
+        }
+        std::cout << "Has " << crits[i]->returnstmts->size() << " returns." << std::endl;
+        for(auto r : *(c->returnstmts)) {
+            PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
+            PrintingPolicy& ppr = pp;
+            std::string nodestring;
+            llvm::raw_string_ostream os(nodestring);
+            r->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
+            SourceManager& sm = TheContext->getSourceManager();
+            std::string locstring = r->getSourceRange().getBegin().printToString(sm);
+            std::cout << locstring << "::" << os.str() << std::endl; 
         }
         std::cout << std::endl;
     }
