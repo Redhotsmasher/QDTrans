@@ -752,6 +752,7 @@ public:
             if(crits[i]->needsWait == true) {
                 nodetext << "LL_delegate_wait(";
             } else {
+                //nodetext << "LL_delegate_wait(";
                 nodetext << "LL_delegate(";
             }
             nodetext << crits[i]->lockname << ", " << lfname << "_critSec" << i;
