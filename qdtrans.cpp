@@ -687,6 +687,7 @@ public:
             std::string structname;
             std::string lfname = crits[i]->funcwlock->getNameInfo().getAsString();
             if(crits[i]->returnstmts->empty() == false) {
+                crits[i]->needsWait = true;
                 crits[i]->simplereturns = true;
                 for(unsigned j = 0; j < crits[i]->returnstmts->size(); j++) {
                     if(cast<ReturnStmt>(crits[i]->returnstmts->at(j))->getRetValue() != NULL) {
