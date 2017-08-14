@@ -625,13 +625,17 @@ public:
             unsigned varcount = 0;
             for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                 if(((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL) || ((*(crits[i]->accessedvars))[v]->locality == FUNLOCAL) || (((*(crits[i]->accessedvars))[v]->locality == CRITLOCAL) && ((*(crits[i]->accessedvars))[v]->needsReturn == true))) {
-                    nodetext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                    if((*(crits[i]->accessedvars))[v]->needsReturn == true) {
+                        nodetext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " * " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                    } else {
+                        nodetext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                    }
                     varcount++;
                 }
             }
             if(crits[i]->returnstmts->empty() == false) {
                 if(crits[i]->simplereturns == true) {
-                    nodetext << "    " << crits[i]->funcwunlock->getReturnType().getLocalUnqualifiedType().getAsString() << " __retval__;\n    int __earlyReturn__;\n";
+                    nodetext << "    " << crits[i]->funcwunlock->getReturnType().getLocalUnqualifiedType().getAsString() << " * __retval__;\n    int * __earlyReturn__;\n";
                 } 
             }
             nodetext << "};\n\n";
@@ -713,8 +717,15 @@ public:
                 nodetext << "struct " << lfname << "_critSec" << i << "_msg " << structname << ";\n";
                 for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                     if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL) {
-                        nodetext << "    " << structname << "." << (*(crits[i]->accessedvars))[v]->namestr << " = " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
-                    }
+                        if((*(crits[i]->accessedvars))[v]->needsReturn == true) {
+                            nodetext << "    " << structname << "." << (*(crits[i]->accessedvars))[v]->namestr << " = &" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                        } else {
+                            nodetext << "    " << structname << "." << (*(crits[i]->accessedvars))[v]->namestr << " = " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                        }
+                    } else if((*(crits[i]->accessedvars))[v]->locality == CRITLOCAL && (*(crits[i]->accessedvars))[v]->needsReturn == true) {
+                        nodetext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                        nodetext << "    " << structname << "." << (*(crits[i]->accessedvars))[v]->namestr << " = &" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                    } 
                 }
             }
             functext2 << "void " << lfname << "_critSec" << i << "(unsigned int sz, void* msgP);\n";
@@ -726,14 +737,18 @@ public:
                 functext << "    struct " << lfname << "_critSec" << i << "_msg* " << lfname << "_cs" << i << "msg = (struct " << lfname << "_critSec" << i << "_msg*)msgP;\n";
                 for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                     if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL) {
-                        functext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = " << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
-                    }
+                        if((*(crits[i]->accessedvars))[v]->needsReturn == true) {
+                            functext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = *(" << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ");\n";
+                        } else {
+                            functext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = " << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                        }
+                    } 
                 }
-                if(crits[i]->returnstmts->empty() == false) {
+                /*if(crits[i]->returnstmts->empty() == false) {
                     if(crits[i]->simplereturns == true) {
                         functext << "    " << lfname << "_cs" << i << "msg->__retval__ = NULL;\n    " << lfname << "_cs" << i << "msg->__earlyReturn__ = 0;\n";
                     }
-                }
+                }*/
             }
             //unsigned currdepth;
             std::vector<struct recursionStackEntry> lstack;
@@ -749,6 +764,11 @@ public:
             if(crits[i]->noMsgStruct == false) {
                 nodetext << "    ";
             }
+            if(crits[i]->returnstmts->empty() == false) {
+                if(crits[i]->simplereturns == true) {
+                    nodetext << "int __earlyReturn__ = 0;\n    " << crits[i]->funcwunlock->getReturnType().getLocalUnqualifiedType().getAsString() << " __retval__ = NULL;\n    " << lfname << "_cs" << i << "msg.__earlyReturn__ = &__earlyReturn__;\n    " << lfname << "_cs" << i << "msg.__retval__ = &__retval__;\n    ";
+                }
+            }
             if(crits[i]->needsWait == true) {
                 nodetext << "LL_delegate_wait(";
             } else {
@@ -758,16 +778,21 @@ public:
             nodetext << crits[i]->lockname << ", " << lfname << "_critSec" << i;
             if(crits[i]->noMsgStruct == false) {
                 nodetext << ", sizeof(" << structname << "), &" << structname << ");\n";
-                for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
+                /*for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                     if(((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL) && (*(crits[i]->accessedvars))[v]->needsReturn == true) {
                         nodetext << "    " << (*(crits[i]->accessedvars))[v]->namestr << " = " << lfname << "_cs" << i << "msg." << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                     } else if((*(crits[i]->accessedvars))[v]->locality == CRITLOCAL && (*(crits[i]->accessedvars))[v]->needsReturn == true) {
                         nodetext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = " << lfname << "_cs" << i << "msg." << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                     }
-                }
+                }*/
+                /*for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
+                    if((*(crits[i]->accessedvars))[v]->locality == CRITLOCAL && (*(crits[i]->accessedvars))[v]->needsReturn == true) {
+                        nodetext << "    " << (*(crits[i]->accessedvars))[v]->namestr << " = *(" << lfname << "_cs" << i << "msg." << (*(crits[i]->accessedvars))[v]->namestr << ");\n";
+                    }
+                }*/
                 if(crits[i]->returnstmts->empty() == false) {
                     if(crits[i]->simplereturns == true) {
-                        nodetext << "\n    if(" << lfname << "_cs" << i << "msg.__earlyReturn__ != 0) {\n        return " << lfname << "_cs" << i << "msg.__retval__;\n    }\n\n";
+                        nodetext << "    if(__earlyReturn__ != 0) {\n        return __retval__;\n    }\n\n";
                     } 
                 }   
             } else {
@@ -844,7 +869,7 @@ public:
                     if(crits[i]->noMsgStruct == false) {
                         for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                             if(((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL || (*(crits[i]->accessedvars))[v]->locality == CRITLOCAL) && (*(crits[i]->accessedvars))[v]->needsReturn == true) {
-                                functext << "    " << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << " = " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                                functext << "    *(" << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ") = " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                             }
                         }
                     }
@@ -899,7 +924,7 @@ public:
                                     PrintingPolicy& ppr = pp;
                                     cast<ReturnStmt>(crits[i]->returnstmts->at(j))->getRetValue()->printPretty(os2, (PrinterHelper*)NULL, ppr, (unsigned)4);
                                     std::stringstream reptext;
-                                    reptext << "    " << structname << "->__retval__ = " << os2.str() << ";\n    " << structname << "->__earlyReturn__ = 1;\n    return;\n";
+                                    reptext << "    *(" << structname << "->__retval__) = " << os2.str() << ";\n    *(" << structname << "->__earlyReturn__) = 1;\n    return;\n";
                                     funcrepstr.replace(offset, length, reptext.str());
                                     replength = reptext.str().length();
                                     //std::cout << "Postrep: " << funcrepstr.substr(offset+replength, funcrepstr.length()) << std::endl;
