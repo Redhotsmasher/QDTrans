@@ -455,7 +455,7 @@ public:
                           std::string ulfname = c->funcwunlock->getNameInfo().getAsString();
                           std::cout << "Critical section " << i << " belonging to lock '" << c->lockname << "' detected, with length " << c->end-c->start << ", depth " << c->depth << ", lockdepth " << c->lockdepth << ", lockstatement '" << c->lockstmt << "' at position " << c->start << ", residing in function '" << lfname << "', and unlock statement '" << c->unlockstmt << "' at position " << c->end << ", residing in function '" << ulfname << "'." << std::endl;
                           i++;*/
-                        if((sm.getPresumedLoc(sm.getSpellingLoc(sloc), false).getFilename() == sm.getFileEntryForID(sm.getMainFileID())->getName()) && (FullSourceLoc(sloc, sm).isBeforeInTranslationUnitThan(c->unlockstmt->getLocStart()) == true && FullSourceLoc(c->lockstmt->getLocStart(), sm).isBeforeInTranslationUnitThan(sloc)) == true) {
+                        if((sm.getPresumedLoc(sm.getSpellingLoc(sloc), false).isValid() == true) && (sm.getPresumedLoc(sm.getSpellingLoc(sloc), false).getFilename() == sm.getFileEntryForID(sm.getMainFileID())->getName()) && (FullSourceLoc(sloc, sm).isBeforeInTranslationUnitThan(c->unlockstmt->getLocStart()) == true && FullSourceLoc(c->lockstmt->getLocStart(), sm).isBeforeInTranslationUnitThan(sloc)) == true) {
                             //if(isa<FunctionDecl>(e->)
                             bool dup = false;
                             for(auto v : *(c->accessedvars)) {
