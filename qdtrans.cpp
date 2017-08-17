@@ -215,6 +215,11 @@ public:
                 } 
             } else if(isa<ReturnStmt>(stmt)) {
                 (*newcrit)->returnstmts->push_back(stmt);
+            } else if(isa<BreakStmt>(stmt)) {
+                delete (*newcrit);
+                *inCrit = false;
+                *needspush = false;
+                *skip = true;
             }
         }
     }
@@ -646,8 +651,9 @@ public:
                     StringRef filename = sm.getFileEntryForID(sm.getMainFileID())->getName();
                     std::vector<Replacement> maprepv = (*RepMap)[filename.str()];
                     //std::cout << "Function " << crits[i]->funcwlock->getNameInfo().getAsString() << " goes from " << crits[i]->funcwlock->getSourceRange().getBegin().printToString(sm) << " to " << crits[i]->funcwlock->getSourceRange().getEnd().printToString(sm) << ".\n";
-                    SourceRange bodysr = crits[i]->funcwlock->getBody()->getSourceRange();
-                    SourceLocation addsl = sm.translateFileLineCol(sm.getFileEntryForID(sm.getMainFileID()), FullSourceLoc(bodysr.getBegin(), sm).getExpansionLineNumber()-1, 1);
+                    //SourceRange bodysr = crits[i]->funcwlock->getBody()->getSourceRange();
+                    //SourceLocation addsl = sm.translateFileLineCol(sm.getFileEntryForID(sm.getMainFileID()), FullSourceLoc(bodysr.getBegin(), sm).getExpansionLineNumber()-1, 1);
+                    SourceLocation addsl = crits[i]->funcwlock->getDefinition()->getSourceRange().getBegin();
                     Replacement rep = createAdjustedReplacementForSR(SourceRange(addsl, addsl), TheContext, maprepv, nodetext.str(), true, 0);
                     //createInjectedReplacementForSR(crits[i]->funcwlock->getSourceRange(), TheContext, maprepv, nodetext.str());
                     Replacement rep2 = createAdjustedReplacementForSR(SRToAddProtosTo, TheContext, maprepv, pnodetext.str(), true, 0);
@@ -938,8 +944,9 @@ public:
                             offset = funcrepstr.find("return ", offset+replength);
                         }
                     }
-                    SourceRange bodysr = crits[i]->funcwlock->getBody()->getSourceRange();
-                    SourceLocation addsl = sm.translateFileLineCol(sm.getFileEntryForID(sm.getMainFileID()), FullSourceLoc(bodysr.getBegin(), sm).getExpansionLineNumber()-1, 1);
+                    //SourceRange bodysr = crits[i]->funcwlock->getBody()->getSourceRange();
+                    //SourceLocation addsl = sm.translateFileLineCol(sm.getFileEntryForID(sm.getMainFileID()), FullSourceLoc(bodysr.getBegin(), sm).getExpansionLineNumber()-1, 1);
+                    SourceLocation addsl = crits[i]->funcwlock->getDefinition()->getSourceRange().getBegin();
                     Replacement funcrep = createAdjustedReplacementForSR(SourceRange(addsl, addsl), TheContext, maprepv, funcrepstr, true, 0);
                     Replacement funcrep2 = createAdjustedReplacementForSR(SRToAddProtosTo, TheContext, maprepv, functext2.str(), true, 0);
                     if(crits[i]->returnstmts->empty() == true || crits[i]->simplereturns == true) {
