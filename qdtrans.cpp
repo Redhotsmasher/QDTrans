@@ -50,6 +50,7 @@ enum locality {UNDEF, GLOBAL, CRITLOCAL, FUNLOCAL, ELSELOCAL}; // GLOBAL = globa
 struct variable {
     std::string namestr;
     std::string typestr;
+    bool array;
     enum locality locality;
     bool threadLocal;
     bool pointer;
@@ -410,17 +411,22 @@ public:
             bool dre;
             bool dodo = true;
             SourceLocation sloc;
+            bool array;
             std::string name;
             std::string tstr;
             std::string ctstr;
             clang::DeclStmt::decl_iterator DeclIterator;
             Decl* d;
-            if(isa<DeclRefExpr>(s)) {
+            if(isa<DeclRefExpr>(s) == true && isa<EnumConstantDecl>(cast<DeclRefExpr>(s)->getDecl()) == false) {
                 dre = true;
                 Expr* e = cast<Expr>(s);
                 DeclarationNameInfo declname = ((DeclRefExpr*)(e))->getNameInfo();
                 name = declname.getName().getAsString();
                 tstr = ((DeclRefExpr*)(e))->getDecl()->getType().getAsString();
+                array = isa<ArrayType>(((DeclRefExpr*)(e))->getDecl()->getType().getDesugaredType((*TheContext)).getTypePtr());
+                if(array == true) {
+                    tstr = cast<ArrayType>(((DeclRefExpr*)(e))->getDecl()->getType().getDesugaredType((*TheContext)).getTypePtr())->getElementType().getAsString();
+                }
                 sloc = e->getExprLoc();
                 d = ((DeclRefExpr*)(e))->getDecl();
             } else {
@@ -439,9 +445,13 @@ public:
                     } else {
                         if(DeclIterator != ((DeclStmt*)(s))->decl_end()) {
                             d = *DeclIterator;
-                            if(isa<VarDecl>(d)) {
+                            if(isa<VarDecl>(d) == true && isa<EnumConstantDecl>(d) == false) {
                                 name = cast<VarDecl>(d)->getNameAsString();
                                 tstr = cast<VarDecl>(d)->getType().getAsString();
+                                array = isa<ArrayType>(cast<VarDecl>(d)->getType().getDesugaredType((*TheContext)).getTypePtr());
+                                if(array == true) {
+                                    tstr = cast<ArrayType>(cast<VarDecl>(d)->getType().getDesugaredType((*TheContext)).getTypePtr())->getElementType().getAsString();
+                                }
                                 sloc = d->getLocation();
                             } else {
                                 name = "";
@@ -475,12 +485,16 @@ public:
                                 newvar->namestr = name;
                                 //std::cout << "Name: " << name << std::endl;
                                 newvar->typestr = tstr;
+                                newvar->array = array;
                                 //newvar->typestr = declname.getNamedTypeInfo()->getType().getAsString();
                                 //std::cout << "Type: " << newvar->typestr << std::endl;
                                 if(strstr(tstring, "*") != NULL) {
                                     newvar->pointer = true;
                                 } else {
                                     newvar->pointer = false;
+                                }
+                                if(newvar->array) {
+                                    newvar->typestr = newvar->typestr + " * ";
                                 }
                                 SourceRange declsr = d->getSourceRange();
                                 newvar->threadLocal = false;
@@ -498,11 +512,15 @@ public:
                                             newvar->needsReturn = false;
                                         } else {
                                             newvar->locality = ELSELOCAL;
-                                            newvar->needsReturn = true;
+                                            if(newvar->pointer == true) {
+                                                newvar->needsReturn = true;
+                                            } else {
+                                                newvar->needsReturn = false;
+                                            }
                                         }
                                     }
                                 }
-                                if(newvar->locality == CRITLOCAL || newvar->locality == FUNLOCAL) {
+                                if(newvar->locality == CRITLOCAL || newvar->locality == FUNLOCAL || newvar->locality == ELSELOCAL) {
                                     if(c->lockdepth == 0 && c->typeA == true) {
                                         Stmt::child_iterator ChildIterator = c->funcwunlock->getBody()->child_begin();
                                         /*std::cout << "c->unlockstmt = ";
@@ -723,7 +741,7 @@ public:
                 nodetext << "struct " << lfname << "_critSec" << i << "_msg " << structname << ";\n";
                 for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                     if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL) {
-                        if((*(crits[i]->accessedvars))[v]->needsReturn == true) {
+                        if((*(crits[i]->accessedvars))[v]->needsReturn == true && (*(crits[i]->accessedvars))[v]->array == false) {
                             nodetext << "    " << structname << "." << (*(crits[i]->accessedvars))[v]->namestr << " = &" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                         } else {
                             nodetext << "    " << structname << "." << (*(crits[i]->accessedvars))[v]->namestr << " = " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
@@ -744,7 +762,11 @@ public:
                 for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
                     if((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL) {
                         if((*(crits[i]->accessedvars))[v]->needsReturn == true) {
-                            functext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = *(" << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ");\n";
+                            if((*(crits[i]->accessedvars))[v]->array == false) {
+                                functext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = *(" << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ");\n";
+                            } else {
+                                functext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " * " << (*(crits[i]->accessedvars))[v]->namestr << " = " << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
+                            }
                         } else {
                             functext << "    " << (*(crits[i]->accessedvars))[v]->typestr << " " << (*(crits[i]->accessedvars))[v]->namestr << " = " << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                         }
@@ -874,7 +896,7 @@ public:
                 } else {
                     if(crits[i]->noMsgStruct == false) {
                         for(unsigned v = 0; v < crits[i]->accessedvars->size(); v++) {
-                            if(((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL || (*(crits[i]->accessedvars))[v]->locality == CRITLOCAL) && (*(crits[i]->accessedvars))[v]->needsReturn == true) {
+                            if(((*(crits[i]->accessedvars))[v]->locality == ELSELOCAL || (*(crits[i]->accessedvars))[v]->locality == FUNLOCAL || (*(crits[i]->accessedvars))[v]->locality == CRITLOCAL) && (*(crits[i]->accessedvars))[v]->needsReturn == true && (*(crits[i]->accessedvars))[v]->array == false) {
                                 functext << "    *(" << structname << "->" << (*(crits[i]->accessedvars))[v]->namestr << ") = " << (*(crits[i]->accessedvars))[v]->namestr << ";\n";
                             }
                         }
@@ -1395,6 +1417,7 @@ void printCrits(ASTContext* TheContext) {
             std::string tloc;
             std::string ptr;
             std::string needsret;
+            std::string array;
             if(v->threadLocal == true) {
                 tloc = "True";
             } else {
@@ -1410,7 +1433,12 @@ void printCrits(ASTContext* TheContext) {
             } else {
                 needsret = "False";
             }
-            std::cout << "    " << v->typestr << " " << v->namestr << " of locality '" << v->locality << "'.\n        threadLocal: " << tloc << ", pointer: " << ptr << ", needsReturn: " << needsret << "." << std::endl;
+            if(v->array == true) {
+                array = "True";
+            } else {
+                array = "False";
+            }
+            std::cout << "    " << v->typestr << " " << v->namestr << " of locality '" << v->locality << "'.\n        threadLocal: " << tloc << ", pointer: " << ptr << ", needsReturn: " << needsret << ", array: " << array << "." << std::endl;
         }
         std::cout << "Has " << crits[i]->returnstmts->size() << " returns." << std::endl;
         for(auto r : *(c->returnstmts)) {
