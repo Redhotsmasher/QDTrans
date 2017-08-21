@@ -676,7 +676,7 @@ public:
                     //createInjectedReplacementForSR(crits[i]->funcwlock->getSourceRange(), TheContext, maprepv, nodetext.str());
                     Replacement rep2 = createAdjustedReplacementForSR(SRToAddProtosTo, TheContext, maprepv, pnodetext.str(), true, 0);
                     if(crits[i]->returnstmts->empty() == true || crits[i]->simplereturns == true) {
-                        maprepv.push_back(rep2);
+                        //maprepv.push_back(rep2);
                         maprepv.push_back(rep);
                     }
                     (*RepMap)[filename.str()] = maprepv;
@@ -973,7 +973,7 @@ public:
                     Replacement funcrep2 = createAdjustedReplacementForSR(SRToAddProtosTo, TheContext, maprepv, functext2.str(), true, 0);
                     if(crits[i]->returnstmts->empty() == true || crits[i]->simplereturns == true) {
                         maprepv.push_back(funcrep);
-                        maprepv.push_back(funcrep2);
+                        //maprepv.push_back(funcrep2);
                         maprepv.push_back(deleterep);
                         maprepv.push_back(firstrep);
                         crits[i]->transformed = true;
