@@ -375,6 +375,7 @@ public:
         erased = false;
         for(unsigned i = 0; i < crits.size(); i++) {
             if(crits[i]->returnstmts->empty() == false) {
+                std::cout << "Critical section " << i << " has " << crits[i]->returnstmts->size() << " returns right now." << std::endl;
                 std::vector<clang::Stmt*>::iterator riterator = crits[i]->returnstmts->begin();
                 SourceRange lockrange = crits[i]->lockstmt->getSourceRange();
                 SourceRange unlockrange = crits[i]->unlockstmt->getSourceRange();
@@ -383,7 +384,7 @@ public:
                     if((*riterator) != NULL) {
                         //printf("%lX\n", (*riterator));
                         SourceRange returnrange = (*riterator)->getSourceRange();
-                        if(isSRLessThan(unlockrange, returnrange, TheContext) == true || isSRLessThan(returnrange, lockrange, TheContext) == true) {
+                        if(isSRInside(returnrange, SourceRange(lockrange.getBegin(), unlockrange.getEnd()), TheContext) == false) {
                             crits[i]->returnstmts->erase(riterator);
                             erased = true;
                         }
