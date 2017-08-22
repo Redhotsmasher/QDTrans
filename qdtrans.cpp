@@ -512,11 +512,12 @@ public:
                                             newvar->needsReturn = false;
                                         } else {
                                             newvar->locality = ELSELOCAL;
-                                            if(newvar->pointer == true) {
+                                            /*if(newvar->pointer == true) {
                                                 newvar->needsReturn = true;
                                             } else {
                                                 newvar->needsReturn = false;
-                                            }
+                                            }*/
+                                            newvar->needsReturn = false;
                                         }
                                     }
                                 }
@@ -548,7 +549,7 @@ public:
                                         newvar->needsReturn = true; //STUB; unimplemented!
                                     }
                                 }
-                                if(newvar->needsReturn == true) {
+                                if(newvar->needsReturn == true || c->returnstmts->empty() == false) {
                                     c->needsWait = true;
                                 }
                                 c->accessedvars->push_back(newvar);
