@@ -868,6 +868,7 @@ public:
                     llvm::raw_string_ostream os(nodestring);
                     (*topIterator)->printPretty(os, (PrinterHelper*)NULL, ppr, (unsigned)4);
                     //if(isUnlock == false) {
+                    std::cout << "\n" << os.str() << std::endl;
                         functext << "    " << os.str() << ";\n";
                     //}
                     SourceRange locksr = crits[i]->lockstmt->getSourceRange();
@@ -946,13 +947,14 @@ public:
                             long replength = 0;
                             if(cast<ReturnStmt>(crits[i]->returnstmts->at(j))->getRetValue() != NULL) {
                                 if(cast<ReturnStmt>(crits[i]->returnstmts->at(j))->getRetValue()->getType().getLocalUnqualifiedType() == crits[i]->funcwunlock->getReturnType().getLocalUnqualifiedType()) {
-                                    unsigned length = sm.getFileOffset(FullSourceLoc(sm.getFileLoc(crits[i]->returnstmts->at(j)->getSourceRange().getEnd()), sm))-sm.getFileOffset(FullSourceLoc(sm.getFileLoc(crits[i]->returnstmts->at(j)->getSourceRange().getBegin()), sm))+2;
+                                    unsigned length = sm.getFileOffset(FullSourceLoc(sm.getFileLoc(crits[i]->returnstmts->at(j)->getSourceRange().getBegin()), sm))-sm.getFileOffset(FullSourceLoc(sm.getFileLoc(crits[i]->returnstmts->at(j)->getSourceRange().getBegin()), sm))+2+7;
                                     std::string nodestr2;
                                     llvm::raw_string_ostream os2(nodestr2);
                                     //FunctionDecl* MyFunDecl = MyCallExpr->getDirectCallee();
                                     PrintingPolicy pp = PrintingPolicy(TheContext->getLangOpts());
                                     PrintingPolicy& ppr = pp;
                                     cast<ReturnStmt>(crits[i]->returnstmts->at(j))->getRetValue()->printPretty(os2, (PrinterHelper*)NULL, ppr, (unsigned)4);
+                                    length += os2.str().length();
                                     std::stringstream reptext;
                                     reptext << "    *(" << structname << "->__retval__) = " << os2.str() << ";\n    *(" << structname << "->__earlyReturn__) = 1;\n    return;\n";
                                     funcrepstr.replace(offset, length, reptext.str());
